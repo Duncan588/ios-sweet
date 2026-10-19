@@ -2,7 +2,23 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-10-19h initCPU 静默 hang 真因判决：venus ADT vtimer INTID 19→27（最先读这节） <<<
+### >>> UPDATE 2026-10-19i CPU bring-up wedge 诊断 patch 0083（boot#4 更早静默；最先读这节） <<<
+
+- **boot#4 结果回顾（0082 内核 + ADT INTID 27 = 3cc39d33…，官方 17 参数 cmdline，cpus=1）**：屏停在 `SWEET FB: AppleCLCD … presented as 1`（0017/0061 的 AppleCLCD::start 里程碑行），5+ 分钟无新行、无 panic、背光常亮。boot#3（INTID=19）在同一行之后还打了三行（ECPU requested → start() cpu: 0 → entered initCPU mpidr=0x0 EL1 IRQs=1）然后才静默，且 5s 超时 panic 从未触发。**boot#4 连 ECPU requested 行都没有 = wedge 更早：嫌疑窗口为 AppleCLCD::start 之后、SweetCPU nub 匹配/startAll 首个 IOLog 之前的 IOKit matching 段，或 startAll 等待本身刚起就被吞**（fbcon 本身在 boot#3 已证明 IOMFB present 之后仍可绘画，kernel 字节不变、ADT 只改 27，故判「内核在更早处停印」而非「fbcon 不再画」）。
+- **源级全路径（已核，结论存档）**：cpus=1 时 PSCI CPU_ON 根本不会被调用（startCPU 仅 secondary 跰）——boot#3/#4 的卡点在 **cpu0 自 SGI 等待链** 与/或其前的 IOKit 窗口：`SweetCPU::start`（nub 匹配）→ `startAll` 线程（IOLog requested → IOSleep(1) 等 registered）→ `processor_start(cpu0)` → `initCPU` → `signalCPU(this)`（**ICC_SGI1R_EL1 系统寄存器，非 GICD_SGIR MMIO**；SGI INTID 1，target list=Aff0 位图）→ startAll 等待 `initialized && !SIGPdisabled`，交付靠 sleh_irq 读 ICC_IAR1 命中 intid<16 → cpu_signal_handler。conduit 一致性已核零：patch 0065 用 `smc #0`（PSCI_CPU_ON 0xC4000003）、shim SMP stub 用 smc、venus ABL DTB `/psci method = "smc"`（Xiaomi11/out/vboot_dtb_04.dts:493）——三方全部一致；boot#3 的静默是死 timebase 下 IOSleep/mach_absolute_time 永不返回（ADT 19 锁定），boot#4（27 已修）反而更早静默 = 新的未解释现象，交 0083 诊断。
+- **0083 patch 内容（xnu/patches/0083-sweet-cpu-bringup-debug.patch，全 `#if defined(SWEET)`/BOOT_CONFIG 门，官方 0047-0055 诊断批次风格）**：
+  1. sleh.c：SGI INTID 1 / vtimer (ADT intid) 交付计数器（sweet_dbg_sgi_count/tick_count，定义于 pe_fiq.c，只增不打印——IRQ 内 kprintf 会抢 console 锁）；
+  2. SweetCPU.cpp：startAll 入口 `registered=%u/%u tick=%u sgi=%u` kprintf（kprintf 直通 fbcon，IOLog 走日志线程恰嫌疑定时器链）、注册等待每半秒 beat、每 CPU processor_start 结果行、alive-wait 每半秒 beat（initialized/sig/tick/sgi）、5s 超时时先 kprintf 状态再 panic（等待循环第 1 秒起可见）、signalCPU 发送端 `SGI1 target mpidr=0x… via ICC_SGI1R`、SweetCPU nub 匹配标记；
+  3. IOService.cpp（boot-arg `sweetcpudbg=1` 门控）：每次 startCandidate 打 `SWEET DBG: <Class>::start(<provider>)`——若 boot#4 的 wedge 在 AppleCLCD→SweetCPU 的 IOKit 段，下一 boot 最后一行服务名即真凶。
+- **判读表（下一 boot 拍屏）**：①屏停在 `SWEET DBG: …::start(…)` → wedge = 该服务 start 内；②到 `SweetCPU nub matched` 后无 startAll 行 → startAll 线程从未被调度（scheduler/线索）；③有 alive-wait beats 且 ms 递增、tick 计数涨 → timebase 活着，SGI=0 → 自 SGI 交付问题（GIC-600 group1 SGIR/target quirk）；④5s 状态行 shows initialized=1 sig=0 → SIGPdisabled 未清（cpu_signal_handler 链）；⑤仍停在 `presented as 1` 且连 sweetcpudbg 的第一行都没有 → 超出了所有已插桩点（IOLog 缓冲/日志线程死亡候选）。
+- **构建/发射（OFFICIAL-COMMAND 铁律，PSCI/tee 一律不动官方）**：
+  ```
+  python3 tools/mkpayload.py xnu/out/0083/kernel.development.sweet shim/out/venus-adt.bin shim/out/payload-venu0.bin --cmdline 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetcpudbg=1'
+  bash shim/build.sh --venus 2 out/payload-venu0.bin /home/monster/vboot_dtb_04.dtb
+  tools/venus_boot_probe.sh shim/out/shim-boot-venus.img
+  ```
+  `sweetcpudbg=1` 可去掉（去噪二轮）；ADT 不变（INTID 27 版 3cc39d33…）。
+- CI run 39229150705（ref venus-probe@730634a）；产物 xnu/out/0083/kernel.development.sweet。官方 patch 未动。
 
 - **官方 qemu 基线对照（最硬证据）**：官方 `python tools/mkadt.py shim/out/qemu-adt-ref.bin --qemu` 生成官方 qemu ADT（官方 tools/qemu-sweet.py 用它跑通同一内核），与 mkadt_venus.py 重打的 venus ADT 逐节点 diff（一次性脚本 `shim/out/adt_diff.py`，路径+全属性对比，kdump 级）。**结果：逐节点结构完全同构；唯一功能相关差异 = `/arm-io/gic virtual-timer-intid`：qemu=27（0x1b），venus=19（0x13，mkadt.py 硬编码的 SM7150 sweet 已验证值被 venus 继承）**；其余 diff 全属 venus-by-design（RAM banks、1440x3200 canvas、cortex-a55/a78/x1 compatible/frequency、qcom,sm8350/xiaomi,venus compatible、多出 memory/cpu1-7/ufs 节点）。GICD 0x17A00000+64K、GICR 0x17A60000+0x100000（stride 0x20000 × 8 恰好 1MB）、timebase 19.2MHz、CPU 节点 reg/state 等逐字段一致。
 - **内核侧消费路径（xnu/patches/0017 + OSS xnu-8796.141.3 pe_fiq.c/sleh.c）**：0017 在 GIC init 从该节点读 `virtual-timer-intid`（缺省 19），之后 GICR_ISENABLER0 只 enable `(1<<intid)|(1<<SGI1)`，sleh.c 按同一 intid 分派 timer 中断——venus ADT 的 19 使能/dispatch 的是不存在于 SM8350 的 PPI，vtimer（真值 27，主会话判定：vtimer 27/ptimer 30/hv 28/secure 29）中断永远不进。**IRQ 使能后所有靠 tick 的等待（IOSleep/线程 wake/超时轮询）永远睡死** → 系统在 CPU bring-up 打印后全面冻结、5s 超时分支永不执行、无 panic 无新行 = 静默 wedged。判定为本次 hang 真因。
