@@ -85,8 +85,8 @@ flowchart LR
 | 项目 | `sweet` | `venus` | 置信 |
 |---|---|---|---|
 | SoC | SM7150 / 2×A76+6×A55 ARMv8.2 | SM8350 / 1×X1+3×A78+4×A55 **ARMv9** | SUPPORTED |
-| boot 格式 | v2 单分区 | **v3 + vendor_boot + AVB**（A/B） | SUPPORTED |
-| RAM 窗口 | 0xb0000000+1.2G / highmem 数据已实测 | LPDDR5，carve-outs 实测 UNKNOWN（无 root，待 S1 探针/FDT dump） | UNKNOWN |
+| boot 格式 | v2 单分区 | **v3 + vendor_boot + AVB**（A/B，boot 分区实测 192MiB 双槽） | SUPPORTED↑（adb+root 自证） |
+| RAM 窗口 | 0xb0000000+1.2G / highmem 数据已实测 | LPDDR5，carve-outs 实测 UNKNOWN，**但已有 APatch su 通道可直接 dump FDT/iomem（S2 即可走）** | UNKNOWN→可解 |
 | GIC/Timer | GICv3，vtimer INTID 19，19.2MHz | 同型（待实机验证） | SUPPORTED↓ |
 | UFS | UFSHCI 2.1 @0x1d84000 | **bootdevice 同址 0x1d84000（adb cmdline 自证）**，UFS 3.1 协议差异待验 | SUPPORTED↑ |
 | 显示 | 1080×2400 ABL splash @0x9c000000 | 1440×3200@120Hz AMOLED，地址 UNKNOWN | SUPPORTED |
@@ -145,14 +145,14 @@ flowchart LR
 ## 14. 最近交接记录
 
 - 日期：2026-10-19
-- 本次目标：首轮只读审计 + 生成 6 份初始文档（本地）
-- 已完成：`E:\Hackios\ios-sweet` 克隆（main，基 SHA `fdad0de`，浅克隆 depth=50）；5 个子代理分析（见本文件 §6、各 docs 引用）
-- 修改文件：仅新增 `AI_CONTEXT.md` 与 `docs/*` 6 篇；未触碰上游代码
-- 执行命令：`git clone`（Windows 可达 github，笔记本不可达）；ssh notebook adb 探测（unauthorized）
-- 测试与验证结果：无实机验证
-- 未执行的验证：venus adb（待手机确认 USB 调试授权）
-- 失败实验与原因：见 §11
-- 新发现的事实：bootloader 已解锁；类原生 ROM；文档生成完毕
+- 本次目标：首轮审计 + Stage-0/1 推进
+- 已完成：仓库克隆（Windows+Linux 双侧，Linux@ e29ba8a + 工具链全齐含 apfs-fuse 源码编译）；docs 6 篇初稿；adb 只读侦查（LAHAINA enhance：活动槽 _b、APatch root 通道、boot 192MiB/vbmeta 128KiB 等）；**CI 基线 run 39193640899 SUCCESS（7m47s），xnu-kernel 已下载本地 xnu/out**
+- 执行的设备命令：全部只读 adb/`su -c`；未执行任何 flash/reboot/boot
+
+### 待办（S1 具体缺口）
+- unpack_bootv2.py 扩展 v3/v4（当前解 v3 会除零）
+- build.sh 的 mkbootimg v3 参数与 dtbo 挂接
+- venus dtbo/vendor_boot 只读 dump（root `su -c 'dd ...' → adb pull`）——留给用户批准的会话做
 - 尚存风险：见 §7 UNKNOWN 列
 - 当前阻塞：venus adb 授权未确认
 - 下一步唯一优先任务：见 §9
