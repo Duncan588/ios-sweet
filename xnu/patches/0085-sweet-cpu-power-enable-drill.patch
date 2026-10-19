@@ -1,0 +1,53 @@
+xnu: 0085 sweet cpu_power_enable drill
+
+drill: 0085 sweet cpu_power_enable drill
+
+venus phone wedges silently between "P0084: processor_startup master
+cpu=0 reason=1" and the (missing) ml_cpu_power_enable returned line.
+Bracket both ml_cpu_power_enable variants and print the live inputs
+(cpu_id, boot_cpu, cluster_power_supported) at PE_cpu_power_enable
+entry. No behavior change.
+
+diff --git a/iokit/Kernel/arm/AppleARMSMP.cpp b/iokit/Kernel/arm/AppleARMSMP.cpp
+index 961e0d6..d443661 100644
+--- a/iokit/Kernel/arm/AppleARMSMP.cpp
++++ b/iokit/Kernel/arm/AppleARMSMP.cpp
+@@ -415,6 +415,10 @@ PE_cpu_power_disable(int cpu_id)
+ void
+ PE_cpu_power_enable(int cpu_id)
+ {
++#if defined(SWEET)
++	kprintf("P0085: PE_cpu_power_enable cpu=%d boot_cpu=%d cpl=%d mask=%#x\n",
++	    cpu_id, boot_cpu, (int)cluster_power_supported, cpu_power_state_mask);
++#endif
+ 	bit_set(cpu_power_state_mask, cpu_id);
+ 	if (!cluster_power_supported || cpu_id == boot_cpu) {
+ 		return;
+diff --git a/osfmk/arm/cpu_common.c b/osfmk/arm/cpu_common.c
+index b0bfadc..f2ceeb8 100644
+--- a/osfmk/arm/cpu_common.c
++++ b/osfmk/arm/cpu_common.c
+@@ -932,7 +932,13 @@ ml_cpu_end_loop(void)
+ void
+ ml_cpu_power_enable(int cpu_id)
+ {
++#if defined(SWEET)
++	kprintf("P0085: ml_cpu_power_enable cpu=%d (ARMSMP path)\n", cpu_id);
++#endif
+ 	PE_cpu_power_enable(cpu_id);
++#if defined(SWEET)
++	kprintf("P0085: ml_cpu_power_enable cpu=%d returned\n", cpu_id);
++#endif
+ }
+ 
+ void
+@@ -966,6 +972,9 @@ ml_cpu_end_loop(void)
+ void
+ ml_cpu_power_enable(__unused int cpu_id)
+ {
++#if defined(SWEET)
++	kprintf("P0085: ml_cpu_power_enable cpu=%d (empty stub! ARMSMP off)\n", cpu_id);
++#endif
+ }
+ 
+ void
