@@ -1,203 +1,103 @@
-# RESEARCH_LOG — ios-sweet → Xiaomi 11 (venus) 调查记录
+﻿# RESEARCH_LOG 鈥?ios-sweet 鈫?Xiaomi 11 (venus) 璋冩煡璁板綍
 
-> 规则：每条调查记录时间倒序追加；来源（URL+版本 或 本地路径:行号）必须可复现。
-> 本文件与上游 `NOTES.md` 职责区分：NOTES.md 记录 sweet 上游每次会话完整工程日志（不动）；本文件只记 venus 移植调查与跨设备结论。
-
-## 2026-10-19 — 首轮审计（五路并行子代理）
-
-### 环境
-- Windows 主机可达 github.com；Linux 笔记本直连 443 超时（[REJECTED] 两次尝试），故仓库在 Windows 侧克隆。
-- 手机连笔记本；笔记本端 `adb devices` 显示 `unauthorized`，等待手机上确认 USB 调试授权。
-- 命令经济：本日 terminal 调用 ≤5 条（含 ssh/git 各一次）。
-
-### 结论 1 — 仓库现状 [VERIFIED]
-- 基线：main @ `fdad0de`（xnu 0081：ue0 上报 Ethernet link），上一个 `2683b6a`（notes v15, 0078-0080）。
-- 目录：`shim/`（裸金属引导 C+asm）、`xnu/patches/`（81 patch + 3 stage .sh）、`tools/`（18 个脚本）、`.github/workflows/xnu.yml`（唯一 CI）。
-- 原项目自述已到 iOS 主屏 sweet；无 venus 专有代码。证据：`README.md:5-8`、`NOTES.md:21`。
-
-### 结论 2 — sweet 真实启动链 [VERIFIED]
+> 瑙勫垯锛氭瘡鏉¤皟鏌ヨ褰曟椂闂村€掑簭杩藉姞锛涙潵婧愶紙URL+鐗堟湰 鎴?鏈湴璺緞:琛屽彿锛夊繀椤诲彲澶嶇幇銆?> 鏈枃浠朵笌涓婃父 `NOTES.md` 鑱岃矗鍖哄垎锛歂OTES.md 璁板綍 sweet 涓婃父姣忔浼氳瘽瀹屾暣宸ョ▼鏃ュ織锛堜笉鍔級锛涙湰鏂囦欢鍙 venus 绉绘璋冩煡涓庤法璁惧缁撹銆?
+## 2026-10-19 鈥?棣栬疆瀹¤锛堜簲璺苟琛屽瓙浠ｇ悊锛?
+### 鐜
+- Windows 涓绘満鍙揪 github.com锛汱inux 绗旇鏈洿杩?443 瓒呮椂锛圼REJECTED] 涓ゆ灏濊瘯锛夛紝鏁呬粨搴撳湪 Windows 渚у厠闅嗐€?- 鎵嬫満杩炵瑪璁版湰锛涚瑪璁版湰绔?`adb devices` 鏄剧ず `unauthorized`锛岀瓑寰呮墜鏈轰笂纭 USB 璋冭瘯鎺堟潈銆?- 鍛戒护缁忔祹锛氭湰鏃?terminal 璋冪敤 鈮? 鏉★紙鍚?ssh/git 鍚勪竴娆★級銆?
+### 缁撹 1 鈥?浠撳簱鐜扮姸 [VERIFIED]
+- 鍩虹嚎锛歮ain @ `fdad0de`锛坸nu 0081锛歶e0 涓婃姤 Ethernet link锛夛紝涓婁竴涓?`2683b6a`锛坣otes v15, 0078-0080锛夈€?- 鐩綍锛歚shim/`锛堣８閲戝睘寮曞 C+asm锛夈€乣xnu/patches/`锛?1 patch + 3 stage .sh锛夈€乣tools/`锛?8 涓剼鏈級銆乣.github/workflows/xnu.yml`锛堝敮涓€ CI锛夈€?- 鍘熼」鐩嚜杩板凡鍒?iOS 涓诲睆 sweet锛涙棤 venus 涓撴湁浠ｇ爜銆傝瘉鎹細`README.md:5-8`銆乣NOTES.md:21`銆?
+### 缁撹 2 鈥?sweet 鐪熷疄鍚姩閾?[VERIFIED]
 ```
-Xiaomi/Qualcomm ABL（解锁 BL，boot v2）
-  → fastboot boot shim/out/shim-boot.img（临时启动）
-  → start.S（arm64 Linux Image 头，flags 0xa）
-  → shim_main（shim.c:373）
-  → loader_boot：payload "SWEETXNU" magic 校验
-       拷 XNU 段到 phys_base+(vmaddr-virt_base)
-       复制 ADT；构造 boot_args v2（长度 736）
-       x0=boot_args 物理地址 → dsb+ic iallu → 裸跳（MMU off）
-  → XNU（16K 页）SweetPlatformExpert → HFS+ root（0047/0026）
-  → launchd → SpringBoard（甜化身份 iPhone10,3）
-```
-- 详细行号：`shim/start.S:5-128`、`shim/loader.c:68-145`、`shim/mmu.c:42-44,91-105`、`tools/mkpayload.py:11-22,158-169`、`tools/mkadt.py:13-34,104-147,215-224`。
-- 证据类别：C 源码 + README/NOTES 描述 + QEMU 与实机日志多次复现。
-
-### 结论 3 — CI 构建约束 [VERIFIED]
-- macos-14，Xcode 15（iig ABI 与 xnu-8796 匹配；Xcode 16 会产 IORPC.kernelContent 不兼容 — `xnu.yml:37-39`）。
-- `dxb` pin @ `663906528d1cd5ea8fde7de6f16de73db9511549`（`xnu.yml:29-30`）。
-- artifact：`xnu-kernel`、`xnu-buildtree`，`if: always()`；download 不等于构建成功（`if-no-files-found: warn`）。
-- SWEET 补丁表（官方）：`README.md:165-188`（0004 machine config、0016 platform expert、0017 device-tree timer intid、0065 PSCI SMP、0072-0077 USB、0042/0044/0046/0047/0049 显示与 HID，等）。
-
-### 结论 4 — venus 硬件事实（外部一手/准一手）
-- SoC=SM8350 / Kryo 685（X1×1+3×A78+4×A55）/ Adreno 660：LineageOS venus wiki + Google Android Common sm8350.dtsi @2fff00c8。
-- RAM：6/8/12GB LPDDR5；上游 reserved-memory 有 hyp/tz/aop/cpucp/removed_mem 等；真实可用窗口未在本仓库实测。
-- Boot：**v3 + vendor_boot（96MB）+ A/B**、boot 192MB、AVB flags=3（解锁后）：Lineage venus BoardConfig + PixelExperience install wiki。
-- UFS：3.1；MMIO 未当作事实证据；DWC3/PHY 位置须 venus.dtsi 查。
-- Display：1440×3200 120Hz AMOLED（DSC，panel-k2）。
-- Touch：Samsung ST FTS（st_fts_k2.ftb）。
-- PMIC：PMK8350 + PM8350/c/b。
-- Risk 最高 Top5 与缓解方案写入 docs/HARDWARE_COMPARISON.md。
-
-### 结论 5 — 关键工程结论
-- `tools/mkadt.py` 是唯一设备常量集中点，移植"main 改点" （~12 处硬编码：PHYS_BASE/MEM_SIZE/SOC_BASE/GICD/GICR/FB/UFS/TIMEBASE/VTIMER_INTID/CPU 拓扑/chip-id/D22AP 身份/boot-manifest-hash）。
-- `shim/mmu.c`/`shim/console.h`/`shim/ufs.c`/`shim/shim.c` 每文件同样有 sweet 硬编码常量组；`mmu.c:86-87` 限"镜像跨 ≤2 个 32MB block"，XNU kernel 变大要复核。
-- ARMv9 引发甜蜜阻力：0011 `physmap-alignment-padding`、0004 Kryo470 cache-line、0078 8 核表等 patch 都不能原样通吃，需**venus 分支**。
-
-### 首轮实机对话事实（用户口述，[S] 待核证）
-- bootloader **已解锁**；当前运行类原生（non-MIUI）ROM。
-- 小米官方工具（MiFlash/小米助手等）一律禁用；只允许 adb/fastboot（Android platform-tools）与开源工具。
-- 手机通过笔记本宿主侧 adb 操作（Windows 侧 adb 看不到设备）。
-
-### 未解决问题
-- venus 实机 RAM carve-outs / ABL 传参：需 S1 探针输出 FDT。
-- venus `fastboot boot` 对自定义 boot 的真实支持状态。
-- UFS 3.1 的 MMIO、CAP.64AS、PHY 分组。
-- ST FTS 触摸固件加载时序。
-
+Xiaomi/Qualcomm ABL锛堣В閿?BL锛宐oot v2锛?  鈫?fastboot boot shim/out/shim-boot.img锛堜复鏃跺惎鍔級
+  鈫?start.S锛坅rm64 Linux Image 澶达紝flags 0xa锛?  鈫?shim_main锛坰him.c:373锛?  鈫?loader_boot锛歱ayload "SWEETXNU" magic 鏍￠獙
+       鎷?XNU 娈靛埌 phys_base+(vmaddr-virt_base)
+       澶嶅埗 ADT锛涙瀯閫?boot_args v2锛堥暱搴?736锛?       x0=boot_args 鐗╃悊鍦板潃 鈫?dsb+ic iallu 鈫?瑁歌烦锛圡MU off锛?  鈫?XNU锛?6K 椤碉級SweetPlatformExpert 鈫?HFS+ root锛?047/0026锛?  鈫?launchd 鈫?SpringBoard锛堢敎鍖栬韩浠?iPhone10,3锛?```
+- 璇︾粏琛屽彿锛歚shim/start.S:5-128`銆乣shim/loader.c:68-145`銆乣shim/mmu.c:42-44,91-105`銆乣tools/mkpayload.py:11-22,158-169`銆乣tools/mkadt.py:13-34,104-147,215-224`銆?- 璇佹嵁绫诲埆锛欳 婧愮爜 + README/NOTES 鎻忚堪 + QEMU 涓庡疄鏈烘棩蹇楀娆″鐜般€?
+### 缁撹 3 鈥?CI 鏋勫缓绾︽潫 [VERIFIED]
+- macos-14锛孹code 15锛坕ig ABI 涓?xnu-8796 鍖归厤锛沊code 16 浼氫骇 IORPC.kernelContent 涓嶅吋瀹?鈥?`xnu.yml:37-39`锛夈€?- `dxb` pin @ `663906528d1cd5ea8fde7de6f16de73db9511549`锛坄xnu.yml:29-30`锛夈€?- artifact锛歚xnu-kernel`銆乣xnu-buildtree`锛宍if: always()`锛沝ownload 涓嶇瓑浜庢瀯寤烘垚鍔燂紙`if-no-files-found: warn`锛夈€?- SWEET 琛ヤ竵琛紙瀹樻柟锛夛細`README.md:165-188`锛?004 machine config銆?016 platform expert銆?017 device-tree timer intid銆?065 PSCI SMP銆?072-0077 USB銆?042/0044/0046/0047/0049 鏄剧ず涓?HID锛岀瓑锛夈€?
+### 缁撹 4 鈥?venus 纭欢浜嬪疄锛堝閮ㄤ竴鎵?鍑嗕竴鎵嬶級
+- SoC=SM8350 / Kryo 685锛圶1脳1+3脳A78+4脳A55锛? Adreno 660锛歀ineageOS venus wiki + Google Android Common sm8350.dtsi @2fff00c8銆?- RAM锛?/8/12GB LPDDR5锛涗笂娓?reserved-memory 鏈?hyp/tz/aop/cpucp/removed_mem 绛夛紱鐪熷疄鍙敤绐楀彛鏈湪鏈粨搴撳疄娴嬨€?- Boot锛?*v3 + vendor_boot锛?6MB锛? A/B**銆乥oot 192MB銆丄VB flags=3锛堣В閿佸悗锛夛細Lineage venus BoardConfig + PixelExperience install wiki銆?- UFS锛?.1锛汳MIO 鏈綋浣滀簨瀹炶瘉鎹紱DWC3/PHY 浣嶇疆椤?venus.dtsi 鏌ャ€?- Display锛?440脳3200 120Hz AMOLED锛圖SC锛宲anel-k2锛夈€?- Touch锛歋amsung ST FTS锛坰t_fts_k2.ftb锛夈€?- PMIC锛歅MK8350 + PM8350/c/b銆?- Risk 鏈€楂?Top5 涓庣紦瑙ｆ柟妗堝啓鍏?docs/HARDWARE_COMPARISON.md銆?
+### 缁撹 5 鈥?鍏抽敭宸ョ▼缁撹
+- `tools/mkadt.py` 鏄敮涓€璁惧甯搁噺闆嗕腑鐐癸紝绉绘"main 鏀圭偣" 锛垀12 澶勭‖缂栫爜锛歅HYS_BASE/MEM_SIZE/SOC_BASE/GICD/GICR/FB/UFS/TIMEBASE/VTIMER_INTID/CPU 鎷撴墤/chip-id/D22AP 韬唤/boot-manifest-hash锛夈€?- `shim/mmu.c`/`shim/console.h`/`shim/ufs.c`/`shim/shim.c` 姣忔枃浠跺悓鏍锋湁 sweet 纭紪鐮佸父閲忕粍锛沗mmu.c:86-87` 闄?闀滃儚璺?鈮? 涓?32MB block"锛孹NU kernel 鍙樺ぇ瑕佸鏍搞€?- ARMv9 寮曞彂鐢滆湝闃诲姏锛?011 `physmap-alignment-padding`銆?004 Kryo470 cache-line銆?078 8 鏍歌〃绛?patch 閮戒笉鑳藉師鏍烽€氬悆锛岄渶**venus 鍒嗘敮**銆?
+### 棣栬疆瀹炴満瀵硅瘽浜嬪疄锛堢敤鎴峰彛杩帮紝[S] 寰呮牳璇侊級
+- bootloader **宸茶В閿?*锛涘綋鍓嶈繍琛岀被鍘熺敓锛坣on-MIUI锛塕OM銆?- 灏忕背瀹樻柟宸ュ叿锛圡iFlash/灏忕背鍔╂墜绛夛級涓€寰嬬鐢紱鍙厑璁?adb/fastboot锛圓ndroid platform-tools锛変笌寮€婧愬伐鍏枫€?- 鎵嬫満閫氳繃绗旇鏈涓讳晶 adb 鎿嶄綔锛圵indows 渚?adb 鐪嬩笉鍒拌澶囷級銆?
+### 鏈В鍐抽棶棰?- venus 瀹炴満 RAM carve-outs / ABL 浼犲弬锛氶渶 S1 鎺㈤拡杈撳嚭 FDT銆?- venus `fastboot boot` 瀵硅嚜瀹氫箟 boot 鐨勭湡瀹炴敮鎸佺姸鎬併€?- UFS 3.1 鐨?MMIO銆丆AP.64AS銆丳HY 鍒嗙粍銆?- ST FTS 瑙︽懜鍥轰欢鍔犺浇鏃跺簭銆?
 ---
 
-## 2026-10-19 — venus 实机 adb 只读事实（子代理采集，Stage-0 一部分）
+## 2026-10-19 鈥?venus 瀹炴満 adb 鍙浜嬪疄锛堝瓙浠ｇ悊閲囬泦锛孲tage-0 涓€閮ㄥ垎锛?
+- 銆愯澶囥€慚2011K2C锛堝皬绫?11 涓浗鐗?8+256锛夛紝device=venus锛汱OS 23.2-20261007-NIGHTLY-venus锛圓ndroid 16锛夛紱鍐呮牳 5.4.302-qgki锛涖€愭椿鍔ㄦЫ _b銆慶mdline `slot_suffix=_b`銆?- 銆恇oot 鏍煎紡 v3 + A/B 鑷瘉銆慴y-name 鍚?boot/vendor_boot/dtbo/vbmeta/vbmeta_system 鍙屾Ы鍏ㄥ銆?- 銆怳FS 鍚屽潃鍒╁ソ銆慶mdline `androidboot.bootdevice=1d84000.ufshc` 鈥斺€?UFSHCI MMIO 涓?sweet 鐨?0x01d84000 **瀹屽叏鍚屽潃**锛宍shim/ufs.c:16` 甯搁噺鍒濆€肩洿鎺ュ彲鐢紙3.1 鐗堟湰宸紓浠嶅緟楠岋級銆?- 銆怉VB 鐘舵€併€慲verifiedbootstate=orange`锛堣В閿佹€侊紝涓?ADR-0004 涓€鑷达級锛宐ootchain 鍐?secureboot=1 涓嶉樆 fastboot boot锛泇bmeta 鍙屾Ы瀛樺湪銆?- 銆愰潰鏉胯嚜璇侀儴鍒嗐€慶mdline `msm_drm.dsi_display0=qcom,mdss_dsi_k2_38_08_0a_mp_dsc_cmd`锛圖SC cmd 妯″紡锛屼笌澶栭儴璧勬枡 panel-k2 浜掕瘉锛涘垎杈ㄧ巼鏁板€兼湭鐩村嚭锛夈€?- 銆愪笉鍙嚜璇侊紙鏃?root锛夈€?proc/device-tree model/compatible 鏉冮檺鎷掔粷锛坰hell 鐢ㄦ埛锛夆啋 **宸茶ˉ锛歳oot锛圓Patch锛夐€氶亾璇婚€?compatible = qcom,lahaina**锛汫IC/timer/PMIC/瑙︽帶鍗忚灏氬緟 venus 鍐呮牳婧愮爜鎴栧悗缁?FDT dump銆?- 銆愮┖闂淬€?data 225G锛屽彲绌洪棿 138G锛堝浠戒綑鍦板厖瓒筹級銆?- 銆愯褰曞舰鎬併€戝垎鍖鸿〃 129 椤圭粏鑺傝瀛愪唬鐞嗕細璇濇姤鍛婏紱鍏抽敭閬楃暀锛歜oot/vendor_boot 瀛楄妭绾уぇ灏忥紙宸插紑琛ュ厖閲囬泦浠诲姟锛夈€?- 銆愰仐婕忛闄┿€憊enus boot_b 瀹為檯鍙绾?boot v3 闀滃儚澶у皬涓婇檺寰呭瓧鑺傜骇纭锛沗fastboot getvar unlocked` 闇€鐢ㄦ埛鎵瑰噯鍚庡啀鍋氥€?
+## 2026-10-19锛堢浜屾锛夆€?鍒嗗尯瀛楄妭绾у彇璇侊紙root 閫氶亾宸茬‘璁わ級
 
-- 【设备】M2011K2C（小米 11 中国版 8+256），device=venus；LOS 23.2-20261007-NIGHTLY-venus（Android 16）；内核 5.4.302-qgki；【活动槽 _b】cmdline `slot_suffix=_b`。
-- 【boot 格式 v3 + A/B 自证】by-name 含 boot/vendor_boot/dtbo/vbmeta/vbmeta_system 双槽全套。
-- 【UFS 同址利好】cmdline `androidboot.bootdevice=1d84000.ufshc` —— UFSHCI MMIO 与 sweet 的 0x01d84000 **完全同址**，`shim/ufs.c:16` 常量初值直接可用（3.1 版本差异仍待验）。
-- 【AVB 状态】`verifiedbootstate=orange`（解锁态，与 ADR-0004 一致），bootchain 内 secureboot=1 不阻 fastboot boot；vbmeta 双槽存在。
-- 【面板自证部分】cmdline `msm_drm.dsi_display0=qcom,mdss_dsi_k2_38_08_0a_mp_dsc_cmd`（DSC cmd 模式，与外部资料 panel-k2 互证；分辨率数值未直出）。
-- 【不可自证（无 root）】/proc/device-tree model/compatible 权限拒绝（shell 用户）→ **已补：root（APatch）通道读通 compatible = qcom,lahaina**；GIC/timer/PMIC/触控协议尚待 venus 内核源码或后续 FDT dump。
-- 【空间】/data 225G，可空间 138G（备份余地充足）。
-- 【记录形态】分区表 129 项细节见子代理会话报告；关键遗留：boot/vendor_boot 字节级大小（已开补充采集任务）。
-- 【遗漏风险】venus boot_b 实际可容纳 boot v3 镜像大小上限待字节级确认；`fastboot getvar unlocked` 需用户批准后再做。
+- 銆愬垎鍖哄ぇ灏?[VERIFIED]銆慴oot_a/b=192MiB銆乿endor_boot_a/b=96MiB銆乨tbo_a/b=24MiB銆乿bmeta=128KiB銆乨evinfo=16MiB锛坄blockdev --getsize64`锛宺oot 閫氶亾鍏ㄦ垚锛夈€?- 銆恟oot 閫氶亾 [VERIFIED]銆慉Patch su 瀛樺湪锛涘畠鐨?su 涓嶆敮鎸?`-qc` 缁勫悎锛岀敤 `-c`锛涘凡鐢ㄥ畠璇婚€?`/proc/device-tree/compatible` 鈫?`qcom,lahaina-mtp / qcom,lahaina / qcom,mtp`銆?*鍚庣画 S2 RAM/carveout dump锛?proc/iomem銆乨evice-tree reserved-memory锛夐兘鏈夐€氶亾浜?*銆?- 銆愭墦鍖呯┖闂?[SUPPORTED]銆慴oot_b 192MiB 瑕嗙洊 mkbootimg v3/v4 鍗曢暅鍍?~64MiB 澶撮儴涓婇檺绾?3 鍊嶏紱vendor_boot 96MiB銆乨tbo 24MiB 鍏呰冻鈥斺€攕him v3 鎵撳寘浣撶Н涓嶆瀯鎴愮摱棰堛€傚瓙浠ｇ悊鎶?768MiB 涓庡崟闀滃儚涓婇檺鍖哄垎锛堝墠鑰呮槸 fastboot max-download 杞借嵎闄愬埗锛夛紝缁撹閲囩撼锛屾爣娉?[SUPPORTED] 寰呭疄璺戦獙璇併€?- 銆怌PU 鍐峰浣嶃€慿ernel_max=31锛? 鏍?lahaina 灞炴甯革級锛?proc/gcc 涓嶅瓨鍦紙璺宠繃锛夈€?- 銆愯澶囧畨鍏ㄣ€戝叏绋嬪彧璇伙紝鏈?reboot銆佹湭鍐欏垎鍖恒€佹湭杩?fastboot銆?
+## 2026-10-19锛堢涓夋锛夆€?CI 鍩虹嚎鏋勫缓鎴愬姛 [VERIFIED]
 
-## 2026-10-19（第二次）— 分区字节级取证（root 通道已确认）
-
-- 【分区大小 [VERIFIED]】boot_a/b=192MiB、vendor_boot_a/b=96MiB、dtbo_a/b=24MiB、vbmeta=128KiB、devinfo=16MiB（`blockdev --getsize64`，root 通道全成）。
-- 【root 通道 [VERIFIED]】APatch su 存在；它的 su 不支持 `-qc` 组合，用 `-c`；已用它读通 `/proc/device-tree/compatible` → `qcom,lahaina-mtp / qcom,lahaina / qcom,mtp`。**后续 S2 RAM/carveout dump（/proc/iomem、device-tree reserved-memory）都有通道了**。
-- 【打包空间 [SUPPORTED]】boot_b 192MiB 覆盖 mkbootimg v3/v4 单镜像 ~64MiB 头部上限约 3 倍；vendor_boot 96MiB、dtbo 24MiB 充足——shim v3 打包体积不构成瓶颈。子代理把 768MiB 与单镜像上限区分（前者是 fastboot max-download 载荷限制），结论采纳，标注 [SUPPORTED] 待实跑验证。
-- 【CPU 冷备位】kernel_max=31（8 核 lahaina 属正常）；/proc/gcc 不存在（跳过）。
-- 【设备安全】全程只读，未 reboot、未写分区、未进 fastboot。
-
-## 2026-10-19（第三次）— CI 基线构建成功 [VERIFIED]
-
-- fork Actions 首次启用（`PUT /actions/permissions` enabled=true），基线 `xnu.yml` @ main（源 commit 处于 fdad0de 同源状态）→ run **39193640899**，conclusion=success，总时长 7m47s（Build 主体 ~7m01s）。
-- artifacts：`xnu-kernel` 57MB（已下载至本地 `E:\Hackios\ios-sweet\xnu\out`，其中 `kernel.development.sweet` 17,206,064B + `SHA256SUMS`）、`xnu-buildtree` 22MB（buildtree 未下载，留本地重放按需）。
-- 意义：macos-14 + Xcode 15/iig 构建链对用户 fork 有效性获得实证；venus 分支可复用该 workflow，仅换 MACHINE_CONFIG / 补丁组。
-- 交接：https://github.com/Duncan588/ios-sweet/actions/runs/39193640899
-- Linux 同步状态：`~/ios-sweet` @ `e29ba8a`（含 docs 5 件 + AI_CONTEXT），后续小 diff（root 通道 RamPresent 行、CI 结论）在下次 S1 提交时一并带过去。
-
-### S1 具体缺口（唯一优先任务分解）
-1. `tools/unpack_bootv2.py` 扩展 boot header v3/v4（当前对 v3 除零报错）[已证实缺口]
-2. `shim/build.sh` 的 mkbootimg v3 参数 / dtbo 挂接方式（venus 的 dtb 在 dtbo_b，24MiB）
-3. 从设备只读 dump：`su -c 'dd if=/dev/block/by-name/dtbo_b of=/sdcard/dtbo_b.img'` + adb pull（root 通道已验证可用；执行前须用户拍板"仅读、放 /sdcard"）
-
+- fork Actions 棣栨鍚敤锛坄PUT /actions/permissions` enabled=true锛夛紝鍩虹嚎 `xnu.yml` @ main锛堟簮 commit 澶勪簬 fdad0de 鍚屾簮鐘舵€侊級鈫?run **39193640899**锛宑onclusion=success锛屾€绘椂闀?7m47s锛圔uild 涓讳綋 ~7m01s锛夈€?- artifacts锛歚xnu-kernel` 57MB锛堝凡涓嬭浇鑷虫湰鍦?`E:\Hackios\ios-sweet\xnu\out`锛屽叾涓?`kernel.development.sweet` 17,206,064B + `SHA256SUMS`锛夈€乣xnu-buildtree` 22MB锛坆uildtree 鏈笅杞斤紝鐣欐湰鍦伴噸鏀炬寜闇€锛夈€?- 鎰忎箟锛歮acos-14 + Xcode 15/iig 鏋勫缓閾惧鐢ㄦ埛 fork 鏈夋晥鎬ц幏寰楀疄璇侊紱venus 鍒嗘敮鍙鐢ㄨ workflow锛屼粎鎹?MACHINE_CONFIG / 琛ヤ竵缁勩€?- 浜ゆ帴锛歨ttps://github.com/Duncan588/ios-sweet/actions/runs/39193640899
+- Linux 鍚屾鐘舵€侊細`~/ios-sweet` @ `e29ba8a`锛堝惈 docs 5 浠?+ AI_CONTEXT锛夛紝鍚庣画灏?diff锛坮oot 閫氶亾 RamPresent 琛屻€丆I 缁撹锛夊湪涓嬫 S1 鎻愪氦鏃朵竴骞跺甫杩囧幓銆?
+### S1 鍏蜂綋缂哄彛锛堝敮涓€浼樺厛浠诲姟鍒嗚В锛?1. `tools/unpack_bootv2.py` 鎵╁睍 boot header v3/v4锛堝綋鍓嶅 v3 闄ら浂鎶ラ敊锛塠宸茶瘉瀹炵己鍙
+2. `shim/build.sh` 鐨?mkbootimg v3 鍙傛暟 / dtbo 鎸傛帴鏂瑰紡锛坴enus 鐨?dtb 鍦?dtbo_b锛?4MiB锛?3. 浠庤澶囧彧璇?dump锛歚su -c 'dd if=/dev/block/by-name/dtbo_b of=/sdcard/dtbo_b.img'` + adb pull锛坮oot 閫氶亾宸查獙璇佸彲鐢紱鎵ц鍓嶉』鐢ㄦ埛鎷嶆澘"浠呰銆佹斁 /sdcard"锛?
 ```
-## YYYY-MM-DD — 任务名
-### 查过什么
-### 关键发现（附证据）
-### 未解决问题 / 阻塞
+## YYYY-MM-DD 鈥?浠诲姟鍚?### 鏌ヨ繃浠€涔?### 鍏抽敭鍙戠幇锛堥檮璇佹嵁锛?### 鏈В鍐抽棶棰?/ 闃诲
 ```
 
-## 2026-10-19（预估）— 真机探针 runbook 就绪
+## 2026-10-19锛堥浼帮級鈥?鐪熸満鎺㈤拡 runbook 灏辩华
 
-- 【交付】`tools/venus_boot_probe.sh`（笔记本侧运行；前置检查 adb/fastboot、40s 超时轮询、getvar unlocked/current-slot/max-download-size 各一行、`fastboot boot <img>` 前后时间戳、全输出存 `logs/venus-probe-<ts>.log`、完成后**不自动重启**并打印"观察窗口开始"；脚本内无任何 flash/erase/format）。`tools/venus_recover_note.md` 为 Windows+笔记本双端黑屏恢复速查（等 30s → Power+音量下 10s → fastboot devices 验证；完全无响应则拔线 5s 重插；**绝不使用小米官方工具**）。
-- 【执行要点】连接方式：Windows 侧 `ssh notebook`，adb/fastboot 仅在笔记本；venus 活动槽 _b；`fastboot boot` 临时启动不写分区；BL 已解锁（verifiedbootstate=orange），ADR-0008 已自动授权本实验；root 为 APatch（`su -c`，不认 `-qc`）。镜像路径做参数传入。
-- 【状态】脚本与速查已提交 venus-probe 分支；本地 Windows 无 bash，未执行 `bash -n`，仅目视核对（标注：未执行），首跑须笔记本端验证。恢复动作按速查文档执行并补记回本日志。
+- 銆愪氦浠樸€慲tools/venus_boot_probe.sh`锛堢瑪璁版湰渚ц繍琛岋紱鍓嶇疆妫€鏌?adb/fastboot銆?0s 瓒呮椂杞銆乬etvar unlocked/current-slot/max-download-size 鍚勪竴琛屻€乣fastboot boot <img>` 鍓嶅悗鏃堕棿鎴炽€佸叏杈撳嚭瀛?`logs/venus-probe-<ts>.log`銆佸畬鎴愬悗**涓嶈嚜鍔ㄩ噸鍚?*骞舵墦鍗?瑙傚療绐楀彛寮€濮?锛涜剼鏈唴鏃犱换浣?flash/erase/format锛夈€俙tools/venus_recover_note.md` 涓?Windows+绗旇鏈弻绔粦灞忔仮澶嶉€熸煡锛堢瓑 30s 鈫?Power+闊抽噺涓?10s 鈫?fastboot devices 楠岃瘉锛涘畬鍏ㄦ棤鍝嶅簲鍒欐嫈绾?5s 閲嶆彃锛?*缁濅笉浣跨敤灏忕背瀹樻柟宸ュ叿**锛夈€?- 銆愭墽琛岃鐐广€戣繛鎺ユ柟寮忥細Windows 渚?`ssh notebook`锛宎db/fastboot 浠呭湪绗旇鏈紱venus 娲诲姩妲?_b锛沗fastboot boot` 涓存椂鍚姩涓嶅啓鍒嗗尯锛汢L 宸茶В閿侊紙verifiedbootstate=orange锛夛紝ADR-0008 宸茶嚜鍔ㄦ巿鏉冩湰瀹為獙锛況oot 涓?APatch锛坄su -c`锛屼笉璁?`-qc`锛夈€傞暅鍍忚矾寰勫仛鍙傛暟浼犲叆銆?- 銆愮姸鎬併€戣剼鏈笌閫熸煡宸叉彁浜?venus-probe 鍒嗘敮锛涙湰鍦?Windows 鏃?bash锛屾湭鎵ц `bash -n`锛屼粎鐩鏍稿锛堟爣娉細鏈墽琛岋級锛岄璺戦』绗旇鏈楠岃瘉銆傛仮澶嶅姩浣滄寜閫熸煡鏂囨。鎵ц骞惰ˉ璁板洖鏈棩蹇椼€?
 ---
 
-## 2026-10-19（第四次）— venus dump 解析（boot v3/v4 / dtbo / RAM carve / FB）[VERIFIED-物证]
+## 2026-10-19锛堢鍥涙锛夆€?venus dump 瑙ｆ瀽锛坆oot v3/v4 / dtbo / RAM carve / FB锛塠VERIFIED-鐗╄瘉]
 
-- 【输入 [SHA-256 已核]】`E:\Hackios\Xiaomi11\` 下 dump：boot_b=98CB9CCA36AA49C18100A9FEE369E8FC4294CD29EB3E44DE3C93AFEBAA8839B4、vendor_boot_b=F0999813278EC3DB24A7DBA13597E599399B50CB1AA5A36F2B929D63FE8FAE2A、dtbo_b=EEBAFBA086EF48318B7500B95515EDC27CF57E129E8E64E3671C42CE93947018。全只读处理，产物在 Xiaomi11/out 与 Xiaomi11/dtb（不进 git）。
-- 【boot 头 [CONFIRMED]】venus boot_b = **header v3**（非 v4）：kernel 39,623,136B、ramdisk 1,489,270B、cmdline 空、os_version 0x200001a9、无 base/offset/tags 字段（v3 语义）。build.sh `--venus` 默认 VENUS_HV=3 **正确，未改**。kernel 已解出到 Xiaomi11/out/boot_b/kernel。
-- 【vendor_boot 头 [CONFIRMED]】VNDRBOOT **v3**：page_size=4096，kernel 槽（32KB 字段口径）实际是 gzip 流，解压为 20,133,880B 标准 cpio 新奇异值：小米把"kernel"槽用了 vendor RAMDISK，非 GKI 标准布局，已按字节验证（解压流以 070701 开头）。
-- 【vendor cmdline（页0）】`androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.memcg=1 androidboot.usbcontroller=a600000.dwc3 cgroup.memory=nokmem,nosocket console=ttyMSM0,115200n8 loop.max_part=7 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=0 pcie_ports=compat iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1`
-- 【vendor RAMDISK 清单】标准 GKI 通用 ramdisk（227 项）：init、init.recovery.qcom.rc、first_stage_ramdisk/fstab.default、fsck.f2fs/e2fsck/dump.f2fs/linker64 等；**ramdisk 内无任何 dtb/dtbo/\*_init.s**（完整清单 Xiaomi11/out/vendor_ramdisk_list.txt；本 cpio 全文 Xiaomi11/out/vendor_boot_blob0.bin）。
-- 【vendor_boot 内嵌 DTB】dtb 区 17 个 SoC 级基树：qcom,lahaina (v1/v2/v2.1)、lahainap x3、shima、yupik/yupikp(yupik-iot/yupikp-iot) 全家（Xiaomi11/dtb/vboot_dtb_00..16.dtb）。main=dtb_04/05/06=Lahaina。Board 档（mtp/venus 面板）来自 dtbo 覆盖，非 vendor_boot 本体。
-- 【dtbo】dt_table v0，magic **0xD7B7AB1E**（BE），header 0x20、entry 32B x73、全 entry id=0 rev=0，全部为标准 FDT overlay（fragment@N）。entry **46 = "Venus based on ... SM8350"（qcom,board-id=65544）**。逐 entry 解包 Xiaomi11/dtb/dtbo_*.dtb。
-- 【FB base【SOLVED】】Lahaina SoC DTB `/reserved-memory/splash_region` **reg = 0xEA600000 / size 0x2300000**，label "cont_splash_region"（venus entry46 未覆盖 splash 区域）。`VENUS_FB_BASE = 0xEA600000`（原占位 0x9d000000 已弃）；dfps 数据区 0xEC900000/0x100000 紧随其后。
-- 【FB 几何【SOLVED，高置信】】dtbo entry46 真机面板 `xiaomi 38 08 0a cmd mode dsc`（与 adb cmdline `qcom,mdss_dsi_k2_38_08_0a_mp_dsc_cmd` 互证）：FHD **W=0x438(1080) H=0x960(2400)**、QHD **W=0x5A0(1440) H=0xC80(3200)**。默认 FHD -> `VENUS_FB_W=1080 / H=2400 / STRIDE=4320`（bpp DT 未给，a8r8g8b8 假设保留，首绘异常再换）；用户若开 QHD+，FB 应切 1440x3200。
-- 【GIC [CONFIRMED=shim.c 无需改]】`/soc/interrupt-controller@17a00000`：compatible arm,gic-v3，**reg = <0x17A00000 0x10000  0x17A60000 0x100000>**，#redistributor-regions=1，redistributor-stride=**0x20000**。与 shim.c 现值完全一致。
-- 【timer【四 PPI 齐解；shim.c 冲突】】SoC DTB `/timer`（arm,armv8-timer）interrupts（DT 顺序=secure phys、ns phys、virtual、hypervisor）：
-  1. raw 13 -> INTID **29**（secure physical）
-  2. raw 14 -> INTID **30**（non-secure physical，cntp_ctl_el0 非安全物理定时器）
-  3. raw 11 -> INTID **27**（**virtual timer，cntv_ctl_el0 → VENUS_VTIMER_INTID = 27**）
-  4. raw 12 -> INTID **28**（hypervisor）
-  clock-frequency 0x124F800 = **19.2 MHz**。
-  警告：shim.c:36-37 硬编码 VTIMER 19 / PTIMER 18（732G 外部资料口径），lahaina DT 不支持 —— 实机 fastboot boot 时 vtimer=19 收不到 IRQ。本次合规只改 soc_venus.h；shim.c 需 venus 侧把 VTIMER->27、PTIMER(cntp)->30（venus_probe 编译选项可 -D 覆盖），宏表已写入 soc_venus.h。
-- 【ufshc】`/soc/ufshc@1d84000`：reg = <0x1D84000 0x3000  0x1D88000 0x8000  0x1D90000 0x9000>（ufs_mem/ufs_ice/ufs_ice_hwkm），IRQ <0 0x109 4>（SPI 265 -> INTID 297）。与 sweet 同址结论维持。
-- 【reserved-memory 全表 [EXPORTED]】SoC DTB 完整表：hyp 0x80000000/0x600000、xbl_aop 0x80600000/0x260000、cmd-db 0x80860000/0x20000、xbl_uefi_log 0x80880000/0x14000、smem 0x80900000/0x200000、cpucp 0x80B00000/0x100000、cdsp_secure_heap 0x80C00000/0x4600000、pil_camera 0x85200000/0x500000、pil_video 0x85700000/0x500000、pil_cvp 0x85C00000/0x500000、pil_adsp 0x86100000/0x3900000、pil_slpi 0x89A00000/0x2F00000、pil_cdsp 0x8C900000/0x1E00000、ipa_fw 0x8E700000/0x10000、ipa_gsi 0x8E710000/0xA000、gpu 0x8E71A000/0x2000、spss 0x8E800000/0x100000、modem 0x8F000000/0x10000000、removed 0xD8800000、**splash 0xEA600000/0x2300000**、demura x2 (0,0)、dfps 0xEC900000/0x100000。/memory@ 在 SoC 基树为空（bank 表 bootloader 注入），S1 FDT dump 可复核。证据：Xiaomi11/out/vboot_dtb_04/05/06.dts、dtb_nodes.txt、dtbo_entry46_venus.dts。
-- 【HARDWARE_COMPARISON 冲突标注】其中的 GIC/timer（INTID 19/18、splash 0x9c000000/0x1700000）**属 sweet(sm7150)/外部732G 资料**，对 lahaina(venus) 不适用；拷贝常量务必以本条 + soc_venus.h 为准。
-- 【soc_venus.h 新值 [COMMITTED]】VENUS_FB_BASE=0xEA600000（原 0x9d000000 占位）、VENUS_FB_W/H/STRIDE=1080/2400/4320、VENUS_VTIMER_INTID=27（附 30/28/29 表）、GIC 校验注记。build.sh 未改（VENUS_HV=3 即正确默认）。
-- 【遗留】1) 面板 bpp/pixel-format DT 未给出（a8r8g8b8 为假设，实测异常先换 BGRX）。2) QHD 下 FB 需 1440x3200（shim 当前 FHD 优先）。3) boot_b 1,489,270B ramdisk 未解（GKI generic，探针打包用注入 ramdisk，无必要）。4) qemu-venus.py 冒烟走 virt 机（vtimer=27 同值），无需变更。
+- 銆愯緭鍏?[SHA-256 宸叉牳]銆慲E:\Hackios\Xiaomi11\` 涓?dump锛歜oot_b=98CB9CCA36AA49C18100A9FEE369E8FC4294CD29EB3E44DE3C93AFEBAA8839B4銆乿endor_boot_b=F0999813278EC3DB24A7DBA13597E599399B50CB1AA5A36F2B929D63FE8FAE2A銆乨tbo_b=EEBAFBA086EF48318B7500B95515EDC27CF57E129E8E64E3671C42CE93947018銆傚叏鍙澶勭悊锛屼骇鐗╁湪 Xiaomi11/out 涓?Xiaomi11/dtb锛堜笉杩?git锛夈€?
+- 銆恇oot 澶?[CONFIRMED]銆憊enus boot_b = **header v3**锛堥潪 v4锛夛細kernel 39,623,136B銆乺amdisk 1,489,270B銆乧mdline 绌恒€乷s_version 0x200001a9銆佹棤 base/offset/tags 瀛楁锛坴3 璇箟锛夈€俠uild.sh `--venus` 榛樿 VENUS_HV=3 **姝ｇ‘锛屾湭鏀?*銆俴ernel 宸茶В鍑哄埌 Xiaomi11/out/boot_b/kernel銆?
+- 銆恦endor_boot 澶?[CONFIRMED]銆慥NDRBOOT **v3**锛歱age_size=4096锛宬ernel 妲斤紙32KB 瀛楁鍙ｅ緞锛夊疄闄呮槸 gzip 娴侊紝瑙ｅ帇涓?20,133,880B 鏍囧噯 cpio 鏂板寮傚€硷細灏忕背鎶?kernel"妲界敤浜?vendor RAMDISK锛岄潪 GKI 鏍囧噯甯冨眬锛屽凡鎸夊瓧鑺傞獙璇侊紙瑙ｅ帇娴佷互 070701 寮€澶达級銆?
+- 銆恦endor cmdline锛堥〉0锛夈€慲androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.memcg=1 androidboot.usbcontroller=a600000.dwc3 cgroup.memory=nokmem,nosocket console=ttyMSM0,115200n8 loop.max_part=7 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=0 pcie_ports=compat iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1`
+- 銆恦endor RAMDISK 娓呭崟銆戞爣鍑?GKI 閫氱敤 ramdisk锛?27 椤癸級锛歩nit銆乮nit.recovery.qcom.rc銆乫irst_stage_ramdisk/fstab.default銆乫sck.f2fs/e2fsck/dump.f2fs/linker64 绛夛紱**ramdisk 鍐呮棤浠讳綍 dtb/dtbo/\*_init.s**锛堝畬鏁存竻鍗?Xiaomi11/out/vendor_ramdisk_list.txt锛涙湰 cpio 鍏ㄦ枃 Xiaomi11/out/vendor_boot_blob0.bin锛夈€?
+- 銆恦endor_boot 鍐呭祵 DTB銆慸tb 鍖?17 涓?SoC 绾у熀鏍戯細qcom,lahaina (v1/v2/v2.1)銆乴ahainap x3銆乻hima銆亂upik/yupikp(yupik-iot/yupikp-iot) 鍏ㄥ锛圶iaomi11/dtb/vboot_dtb_00..16.dtb锛夈€俶ain=dtb_04/05/06=Lahaina銆侭oard 妗ｏ紙mtp/venus 闈㈡澘锛夋潵鑷?dtbo 瑕嗙洊锛岄潪 vendor_boot 鏈綋銆?
+- 銆恉tbo銆慸t_table v0锛宮agic **0xD7B7AB1E**锛圔E锛夛紝header 0x20銆乪ntry 32B x73銆佸叏 entry id=0 rev=0锛屽叏閮ㄤ负鏍囧噯 FDT overlay锛坒ragment@N锛夈€俥ntry **46 = "Venus based on ... SM8350"锛坬com,board-id=65544锛?*銆傞€?entry 瑙ｅ寘 Xiaomi11/dtb/dtbo_*.dtb銆?
+- 銆怓B base銆怱OLVED銆戙€慙ahaina SoC DTB `/reserved-memory/splash_region` **reg = 0xEA600000 / size 0x2300000**锛宭abel "cont_splash_region"锛坴enus entry46 鏈鐩?splash 鍖哄煙锛夈€俙VENUS_FB_BASE = 0xEA600000`锛堝師鍗犱綅 0x9d000000 宸插純锛夛紱dfps 鏁版嵁鍖?0xEC900000/0x100000 绱ч殢鍏跺悗銆?
+- 銆怓B 鍑犱綍銆怱OLVED锛岄珮缃俊銆戙€慸tbo entry46 鐪熸満闈㈡澘 `xiaomi 38 08 0a cmd mode dsc`锛堜笌 adb cmdline `qcom,mdss_dsi_k2_38_08_0a_mp_dsc_cmd` 浜掕瘉锛夛細FHD **W=0x438(1080) H=0x960(2400)**銆丵HD **W=0x5A0(1440) H=0xC80(3200)**銆傞粯璁?FHD -> `VENUS_FB_W=1080 / H=2400 / STRIDE=4320`锛坆pp DT 鏈粰锛宎8r8g8b8 鍋囪淇濈暀锛岄缁樺紓甯稿啀鎹級锛涚敤鎴疯嫢寮€ QHD+锛孎B 搴斿垏 1440x3200銆?
+- 銆怗IC [CONFIRMED=shim.c 鏃犻渶鏀筣銆慲/soc/interrupt-controller@17a00000`锛歝ompatible arm,gic-v3锛?*reg = <0x17A00000 0x10000  0x17A60000 0x100000>**锛?redistributor-regions=1锛宺edistributor-stride=**0x20000**銆備笌 shim.c 鐜板€煎畬鍏ㄤ竴鑷淬€?
+- 銆恡imer銆愬洓 PPI 榻愯В锛泂him.c 鍐茬獊銆戙€慡oC DTB `/timer`锛坅rm,armv8-timer锛塱nterrupts锛圖T 椤哄簭=secure phys銆乶s phys銆乿irtual銆乭ypervisor锛夛細
+  1. raw 13 -> INTID **29**锛坰ecure physical锛?
+  2. raw 14 -> INTID **30**锛坣on-secure physical锛宑ntp_ctl_el0 闈炲畨鍏ㄧ墿鐞嗗畾鏃跺櫒锛?
+  3. raw 11 -> INTID **27**锛?*virtual timer锛宑ntv_ctl_el0 鈫?VENUS_VTIMER_INTID = 27**锛?
+  4. raw 12 -> INTID **28**锛坔ypervisor锛?
+  clock-frequency 0x124F800 = **19.2 MHz**銆?
+  璀﹀憡锛歴him.c:36-37 纭紪鐮?VTIMER 19 / PTIMER 18锛?32G 澶栭儴璧勬枡鍙ｅ緞锛夛紝lahaina DT 涓嶆敮鎸?鈥斺€?瀹炴満 fastboot boot 鏃?vtimer=19 鏀朵笉鍒?IRQ銆傛湰娆″悎瑙勫彧鏀?soc_venus.h锛泂him.c 闇€ venus 渚ф妸 VTIMER->27銆丳TIMER(cntp)->30锛坴enus_probe 缂栬瘧閫夐」鍙?-D 瑕嗙洊锛夛紝瀹忚〃宸插啓鍏?soc_venus.h銆?
+- 銆恥fshc銆慲/soc/ufshc@1d84000`锛歳eg = <0x1D84000 0x3000  0x1D88000 0x8000  0x1D90000 0x9000>锛坲fs_mem/ufs_ice/ufs_ice_hwkm锛夛紝IRQ <0 0x109 4>锛圫PI 265 -> INTID 297锛夈€備笌 sweet 鍚屽潃缁撹缁存寔銆?
+- 銆恟eserved-memory 鍏ㄨ〃 [EXPORTED]銆慡oC DTB 瀹屾暣琛細hyp 0x80000000/0x600000銆亁bl_aop 0x80600000/0x260000銆乧md-db 0x80860000/0x20000銆亁bl_uefi_log 0x80880000/0x14000銆乻mem 0x80900000/0x200000銆乧pucp 0x80B00000/0x100000銆乧dsp_secure_heap 0x80C00000/0x4600000銆乸il_camera 0x85200000/0x500000銆乸il_video 0x85700000/0x500000銆乸il_cvp 0x85C00000/0x500000銆乸il_adsp 0x86100000/0x3900000銆乸il_slpi 0x89A00000/0x2F00000銆乸il_cdsp 0x8C900000/0x1E00000銆乮pa_fw 0x8E700000/0x10000銆乮pa_gsi 0x8E710000/0xA000銆乬pu 0x8E71A000/0x2000銆乻pss 0x8E800000/0x100000銆乵odem 0x8F000000/0x10000000銆乺emoved 0xD8800000銆?*splash 0xEA600000/0x2300000**銆乨emura x2 (0,0)銆乨fps 0xEC900000/0x100000銆?memory@ 鍦?SoC 鍩烘爲涓虹┖锛坆ank 琛?bootloader 娉ㄥ叆锛夛紝S1 FDT dump 鍙鏍搞€傝瘉鎹細Xiaomi11/out/vboot_dtb_04/05/06.dts銆乨tb_nodes.txt銆乨tbo_entry46_venus.dts銆?
+- 銆怘ARDWARE_COMPARISON 鍐茬獊鏍囨敞銆戝叾涓殑 GIC/timer锛圛NTID 19/18銆乻plash 0x9c000000/0x1700000锛?*灞?sweet(sm7150)/澶栭儴732G 璧勬枡**锛屽 lahaina(venus) 涓嶉€傜敤锛涙嫹璐濆父閲忓姟蹇呬互鏈潯 + soc_venus.h 涓哄噯銆?
+- 銆恠oc_venus.h 鏂板€?[COMMITTED]銆慥ENUS_FB_BASE=0xEA600000锛堝師 0x9d000000 鍗犱綅锛夈€乂ENUS_FB_W/H/STRIDE=1080/2400/4320銆乂ENUS_VTIMER_INTID=27锛堥檮 30/28/29 琛級銆丟IC 鏍￠獙娉ㄨ銆俠uild.sh 鏈敼锛圴ENUS_HV=3 鍗虫纭粯璁わ級銆?
+- 銆愰仐鐣欍€?) 闈㈡澘 bpp/pixel-format DT 鏈粰鍑猴紙a8r8g8b8 涓哄亣璁撅紝瀹炴祴寮傚父鍏堟崲 BGRX锛夈€?) QHD 涓?FB 闇€ 1440x3200锛坰him 褰撳墠 FHD 浼樺厛锛夈€?) boot_b 1,489,270B ramdisk 鏈В锛圙KI generic锛屾帰閽堟墦鍖呯敤娉ㄥ叆 ramdisk锛屾棤蹇呰锛夈€?) qemu-venus.py 鍐掔儫璧?virt 鏈猴紙vtimer=27 鍚屽€硷級锛屾棤闇€鍙樻洿銆?
 
-## 2026-10-19 ─ venus probe v3（多基址横扫 + 10s 自证 PSCI 关机链）
+## 2026-10-19 鈹€ venus probe v3锛堝鍩哄潃妯壂 + 10s 鑷瘉 PSCI 鍏虫満閾撅級
 
-- 【改动【COMMITTED 本节同 commit】】\shim/venus_probe.c\ 升 v3：(1) banner 头行改为 \VENUS PROBE v3\；(2) FB 绘画循环扫 3 个候选基址 {0xEA600000(DT splash_region), 0xEA800000(+32MiB), 0x9C000000(sm7150 历史)}，首区域 clear(BLUE)+全信息 banner，其余区域只重置行号后重画 banner（标注 base 值，不清屏，供 ABL 残留内容对照）；(3) banner 完成后打 \probe v3 done, system_off next\ → CNTFRQ×10 忙等 ≈10s → PSCI SYSTEM_OFF(0x84000008)，返回非 0 立即 SYSTEM_RESET(0x84000009)，conduit 仍读 DTB /psci method 自适应（QEMU=hvc/真机预期=smc）；v3 语义=关机/重启/回 ABL，不再 wfe 挂屏；(4) \enus_probe_entry\ 收尾 return 1 修掉 venus_probe.c:86 non-void 警告且保证不 fallthrough 到 loader（shim.c:388 hook 语义核对：探针路径 return 已处理）。配套 \shim/console.\{c,h\}\ 新增 con_reset_row()（仅重置 row=0，不动绘画逻辑；超出仅改 venus_probe.c 的原始指示，因行号静态在 console.c 无法从外部复位）。
-- 【假设 (a) websearch 校准】主线 Linux Mi 11 Ultra (star, 毒瘤 sm8350) DT（wuxilin 2023 linux-arm-msm 列表 patch 3/3）chosen 就有 simple-framebuffer 前屏 reg=0xEA600000 尺寸 1440*3200*4 stride=1440*4 a8r8g8b8，注释『initialized by bootloader』→ 反向证据：SM8350 小米 ABL 交给主线内核时面板已点亮且 splash 基址/几何/格式与我们 QHD 编译档一致。即「ABL 对第三方 boot 完全不点屏」最弱；(a) 修正为更可能「ABL fastboot boot 路径会清/不续写 splash、或 bpp/扫描格式与我们假设不同」，v3 多基址横扫即为分辨 (b) relocate vs 格式错误设计。
-- 【实验流程约定】Windows: \git bundle create E:\\Hackios\\vp6.bundle d95da3f..venus-probe\ → scp 到 notebook:~/ → 笔记本 \git -C ~/ios-sweet-vp4 fetch ~/vp6.bundle HEAD:vp6 && git merge --ff-only vp6\ → \cd ~/ios-sweet-vp4/shim && bash build.sh --venus 3 qhd\ → \ash tools/venus_boot_probe.sh shim/out/shim-boot-venus.img\（fastboot devices 无输出即停，等用户再重启手机）。
-- 【用户观察口径（下一次 boot）】~10s 后自动关机=v3 全链成功 / 自动重启=SYSTEM_OFF 被拒转 RESET / 屏幕闪出蓝色屏+文字=某候选基址命中（记录哪个 base 行）。
+- 銆愭敼鍔ㄣ€怌OMMITTED 鏈妭鍚?commit銆戙€慭shim/venus_probe.c\ 鍗?v3锛?1) banner 澶磋鏀逛负 \VENUS PROBE v3\锛?2) FB 缁樼敾寰幆鎵?3 涓€欓€夊熀鍧€ {0xEA600000(DT splash_region), 0xEA800000(+32MiB), 0x9C000000(sm7150 鍘嗗彶)}锛岄鍖哄煙 clear(BLUE)+鍏ㄤ俊鎭?banner锛屽叾浣欏尯鍩熷彧閲嶇疆琛屽彿鍚庨噸鐢?banner锛堟爣娉?base 鍊硷紝涓嶆竻灞忥紝渚?ABL 娈嬬暀鍐呭瀵圭収锛夛紱(3) banner 瀹屾垚鍚庢墦 \probe v3 done, system_off next\ 鈫?CNTFRQ脳10 蹇欑瓑 鈮?0s 鈫?PSCI SYSTEM_OFF(0x84000008)锛岃繑鍥為潪 0 绔嬪嵆 SYSTEM_RESET(0x84000009)锛宑onduit 浠嶈 DTB /psci method 鑷€傚簲锛圦EMU=hvc/鐪熸満棰勬湡=smc锛夛紱v3 璇箟=鍏虫満/閲嶅惎/鍥?ABL锛屼笉鍐?wfe 鎸傚睆锛?4) \enus_probe_entry\ 鏀跺熬 return 1 淇帀 venus_probe.c:86 non-void 璀﹀憡涓斾繚璇佷笉 fallthrough 鍒?loader锛坰him.c:388 hook 璇箟鏍稿锛氭帰閽堣矾寰?return 宸插鐞嗭級銆傞厤濂?\shim/console.\{c,h\}\ 鏂板 con_reset_row()锛堜粎閲嶇疆 row=0锛屼笉鍔ㄧ粯鐢婚€昏緫锛涜秴鍑轰粎鏀?venus_probe.c 鐨勫師濮嬫寚绀猴紝鍥犺鍙烽潤鎬佸湪 console.c 鏃犳硶浠庡閮ㄥ浣嶏級銆?
+- 銆愬亣璁?(a) websearch 鏍″噯銆戜富绾?Linux Mi 11 Ultra (star, 姣掔槫 sm8350) DT锛坵uxilin 2023 linux-arm-msm 鍒楄〃 patch 3/3锛塩hosen 灏辨湁 simple-framebuffer 鍓嶅睆 reg=0xEA600000 灏哄 1440*3200*4 stride=1440*4 a8r8g8b8锛屾敞閲娿€巌nitialized by bootloader銆忊啋 鍙嶅悜璇佹嵁锛歋M8350 灏忕背 ABL 浜ょ粰涓荤嚎鍐呮牳鏃堕潰鏉垮凡鐐逛寒涓?splash 鍩哄潃/鍑犱綍/鏍煎紡涓庢垜浠?QHD 缂栬瘧妗ｄ竴鑷淬€傚嵆銆孉BL 瀵圭涓夋柟 boot 瀹屽叏涓嶇偣灞忋€嶆渶寮憋紱(a) 淇涓烘洿鍙兘銆孉BL fastboot boot 璺緞浼氭竻/涓嶇画鍐?splash銆佹垨 bpp/鎵弿鏍煎紡涓庢垜浠亣璁句笉鍚屻€嶏紝v3 澶氬熀鍧€妯壂鍗充负鍒嗚鲸 (b) relocate vs 鏍煎紡閿欒璁捐銆?
+- 銆愬疄楠屾祦绋嬬害瀹氥€慦indows: \git bundle create E:\\Hackios\\vp6.bundle d95da3f..venus-probe\ 鈫?scp 鍒?notebook:~/ 鈫?绗旇鏈?\git -C ~/ios-sweet-vp4 fetch ~/vp6.bundle HEAD:vp6 && git merge --ff-only vp6\ 鈫?\cd ~/ios-sweet-vp4/shim && bash build.sh --venus 3 qhd\ 鈫?\ash tools/venus_boot_probe.sh shim/out/shim-boot-venus.img\锛坒astboot devices 鏃犺緭鍑哄嵆鍋滐紝绛夌敤鎴峰啀閲嶅惎鎵嬫満锛夈€?
+- 銆愮敤鎴疯瀵熷彛寰勶紙涓嬩竴娆?boot锛夈€憕10s 鍚庤嚜鍔ㄥ叧鏈?v3 鍏ㄩ摼鎴愬姛 / 鑷姩閲嶅惎=SYSTEM_OFF 琚嫆杞?RESET / 灞忓箷闂嚭钃濊壊灞?鏂囧瓧=鏌愬€欓€夊熀鍧€鍛戒腑锛堣褰曞摢涓?base 琛岋級銆?
 
-- 【S2 mkadt_venus（commit 02593d3, venus-probe）】`tools/mkadt_venus.py` 复用 mkadt.py：/memory reg=三 bank、/chosen dram-base/size=首 bank(0x80000000/0x37500000)、disp0/fbcon 1440x3200、身份 D22AP+0x8015（ADR-0007）、**random-seed 固定为 bytes(range(64))**（跨机 byte-identical）；产物 `shim/out/venus-adt.bin` 10056B，sha256 Win/Linux c3dceb02c0616e89c25d1d2428bdb65eb2d0d125dde6a38245b48819fa1c3e1d（notebook `python3 tools/mkadt_venus.py` 复算一致）。已知：/product 节点缺失——两台机都没有 research/ipsw-x/d22ap.adt（Apple 工件，git 外），出表征即补。下一站：把 venus ADT+kernel 走 qemu-sweet.py loader 路径冒烟。
+- 銆怱2 mkadt_venus锛坈ommit 02593d3, venus-probe锛夈€慲tools/mkadt_venus.py` 澶嶇敤 mkadt.py锛?memory reg=涓?bank銆?chosen dram-base/size=棣?bank(0x80000000/0x37500000)銆乨isp0/fbcon 1440x3200銆佽韩浠?D22AP+0x8015锛圓DR-0007锛夈€?*random-seed 鍥哄畾涓?bytes(range(64))**锛堣法鏈?byte-identical锛夛紱浜х墿 `shim/out/venus-adt.bin` 10056B锛宻ha256 Win/Linux c3dceb02c0616e89c25d1d2428bdb65eb2d0d125dde6a38245b48819fa1c3e1d锛坣otebook `python3 tools/mkadt_venus.py` 澶嶇畻涓€鑷达級銆傚凡鐭ワ細/product 鑺傜偣缂哄け鈥斺€斾袱鍙版満閮芥病鏈?research/ipsw-x/d22ap.adt锛圓pple 宸ヤ欢锛実it 澶栵級锛屽嚭琛ㄥ緛鍗宠ˉ銆備笅涓€绔欙細鎶?venus ADT+kernel 璧?qemu-sweet.py loader 璺緞鍐掔儫銆?
+## 2026-10-19锛堢浜旀锛夆攢 venus probe v4锛團B 鍩哄潃杩愯鏃朵粠 DTB 璇诲彇 鈹€ 娲绘満 splash_region 璇佹嵁锛?
+- 銆愭牴鍥?[CONFIRMED-娲绘満]銆戜笁娆￠粦灞忕殑鍘熷洜鏄垜浠殑 shim 鐢诲埌浜嗛敊璇湴鍧€锛氶潤鎬?vendor_boot SoC DTB 鐨?`/reserved-memory/splash_region reg = 0xEA600000` 宸茶娲绘満鏁版嵁鍚﹀畾銆傛椿鏈?Linux 杩愯鏃?DT锛堝唴鏍?fdt锛宖dt_idx=4/dtbo_idx=46锛宮odel "Venus based on ... SM8350"锛孮HD 1440x3200 cmd 闈㈡澘锛夊鍑轰负 `fdt_live.bin`锛岀敤 `Xiaomi11/tools/fdt_min.py` 瑙ｆ瀽寰?**splash_region = base 0xE2A00000 size 0x2300000**銆傚彴璐︿繚鐣欎袱鐐癸細(1) 闈欐€?SoC DTB 鍊?0xEA600000 鏄?bootloader 鏈鐩栨椂鐨勬畫鐣欐。锛?2) ABL fastboot boot 鏃朵細缁?shim 浼犺嚜宸辩殑 DTB锛坸0锛夛紝瑙ｆ瀽闇€鑷€傚簲鍏跺€硷紙v4 鍗充负姝よ璁★級銆傚伐鍏疯鏄庯細`dtb_nodes.py` 鏄棭鏈熸墜鍐欒В鏋愬櫒锛屽 NOP tag/宓屽璺冲姩瀹瑰繊涓嶈冻锛堟椿鏈?DT 涓湁 FDT_NOP锛夛紝宸茶 `fdt_min.py`锛圶iaomi11/tools/锛屼复鏃朵骇鐗╋紝涓嶅叆 git锛夊彇浠ｃ€?- 銆怰AM banks [CONFIRMED-娲绘満]銆戜笁鏉★細`0x80000000/0x37500000`銆乣0xC0000000/0x140000000`銆乣0x200000000/0x180000000`锛堝嵆 941MB + 5GB + 6GB 鈮?12GB锛夈€?- 銆愭敼鍔?[COMMITTED 鏈妭 commit]銆憊4锛?1) `shim/fdt.{c,h}` 鏂板 `fdt_get_reg(dtb, path, &base, &size)`鈥斺€斿叕鍏辫矾寰?walk 鎶芥垚 `fdt_walk_prop`锛宺eg 鏀寔 16B锛?+2 cells锛孊E 鍙?u64锛屾椿鏈哄竷灞€锛変笌 8B锛?+1 cells锛変袱绉嶇紪鐮侊紱(2) `shim/venus_probe.c`锛歟ntry 棣栨鍗?`fdt_get_reg(dtb, "/reserved-memory/splash_region", ...)`锛屾垚鍔熲啋fb_bases[0]=璇诲埌鐨?base锛屽け璐モ啋鍥炶惤 `VENUS_FB_BASE`锛涘€欓€夋暟缁勬敼涓鸿繍琛屾椂濉厖 {base, base+0x02000000, 0x9C000000}锛堟í鎵繚鐣欙級锛沚anner 鍚庢柊澧?`FB base=... size=...` 涓?`FB-SRC`锛坉tb 璇诲埌 or 鍥炶惤锛夊喅绛栬锛沚anner 鏀?"VENUS PROBE v4"锛?3) `shim/soc_venus.h`锛歚VENUS_FB_BASE 榛樿鏀?0xE2A00000`锛堟敞閲婂啓鏄庨潤鎬?dts 0xEA600000 宸茶娲绘満鏁版嵁鍚﹀畾锛屼繚鐣?VENUS_FB_BASE_STATIC_DTS 鏂囨。鍊硷級锛決HD 灏卞湴鐢熸晥锛坴enus_probe.c `#define VENUS_PANEL_QHD 1`锛宱cv/鏈畾涔夊弻璺緞瀹夊叏锛宐uild.sh --venus 涓嶅甫 qhd 鍙傛暟鍗?QHD锛夈€?- 銆怮EMU 鍐掔儫鍙ｅ緞璋冩暣銆戞柊 shim 浠?DTB 璇诲熀鍧€鑰?QEMU virt 鐢熸垚 DTB 鏃?/reserved-memory/splash_region 鈫?蹇呰蛋鍥炶惤 0xE2A00000锛泀emu-venus.py 鐨?fb_base 姝ｅ垯浠嶈В鏋?soc_venus.h 鐨?VENUS_FB_BASE 瀛楅潰鍊硷紝鎭板ソ涓庢柊鍥炶惤鍊间竴鑷达紙鍏?assert 鍙害鏉?VENUS_FB_STRIDE 褰㈢姸锛屾棤纰嶏級銆俀EMU 4G RAM 瑕嗙洊 0xE2A00000..0xE4D00000锛屽揩鐓?瑙ｇ爜鍙甯稿垽 `venus_probe_ok`锛涜嫢 fb.txt 绌哄垯鎸?v4 闄嶇骇鍒ゆ嵁锛歳esult.json+qemu.log 鏃?panic 鍗抽€氳繃銆?- 銆愰獙璇侀摼銆戠湡鏈猴細`bash tools/venus_boot_probe.sh shim/out/shim-boot-venus.img`锛坴enus_boot_probe.sh 涓嶅彉锛孲YSTEM_OFF 灏炬+10s 瑙傚療绐楁部鐢?v3锛屼笉鍋氫簩娆?boot锛夈€傝瀵熷彛寰勶細灞忓箷搴斿嚭鐜?"VENUS PROBE v4" + FB base/size/鏉ユ簮涓夎锛涜嫢 fb 鍦板潃琛?FB-SRC 鏄剧ず鍥炶惤涓斾粛榛戝睆 鈫?涓嬩竴姝ユ€€鐤?dtbo 瑕嗙洊鍚庣殑鏈€缁?DTB 鎴?ABL 浼犲弬璺緞銆?
+## 2026-10-19锛堢鍏锛夆攢 S2.5 棣栨鎶?SWEETXNU payload 鐏屽叆 venus 鐪熸満锛坘ernel.development.sweet + venus ADT锛?
+- 銆愯浇鑽?[DONE]銆慿ernel = CI run 39193640899 鐨?xnu/out/kernel.development.sweet锛?7,206,064B锛宻ha256 de315bfaf63fc53e71028881321c74b71276ee657b31038a41cab2afa0f7dccf锛屼笌 xnu/out/SHA256SUMS 閫愬瓧鑺備竴鑷达級锛汚DT = shim/out/venus-adt.bin锛坈3dceb02鈥1c3e1d锛屽弻鏈轰竴鑷达級銆倀ools/mkpayload.py 鏈敼鍔紙鍏剁幇鏈?VMADDR/layout 閫昏緫瀵?venus ADT 鐩存帴閫傜敤锛夛紱鏃?--ramdisk锛堢湡鏈哄厛璺戞棤 root 鐨勬渶灏?shell锛宺oot fork 灞?S3锛夈€俢mdline: debug=0xc serial=3 keepsyms=1 -noprogress锛坒bcon reg 0xE2A00000 宸插湪 ADT 閰嶅ソ锛夈€備骇鐗?shim/out/payload-venu0.bin锛?6,610,928B锛宻ha256 65f3a115e53687ca5ec8fe2326ffb107a878114a1ebd28935b7cc2706348f21b锛宖ixups=0锛圕I 鍐呮牳鏈惈 LC_DYLD_CHAINED_FIXUPS锛屽睘棰勬湡锛夛紝virt_base 0xfffffe0006000000锛宔ntry 0xfffffe000748b488锛宬ernel_end 0xfffffe00084c8000銆?
+- 銆愰暅鍍?[DONE]銆戠瑪璁版湰锛垀/ios-sweet-vp4 鍏?ff 鍒?b82f729锛涘悓姝ユ柟寮忥細bundle 鍓嶅繀椤诲厛鏌ュ绔?HEAD鈥斺€?2593d3..b82f729 鐨?bundle 鍥犵瑪璁版湰缂?02593d3 鍩虹偣鑰?fetch 澶辫触锛屾敼 9a16744..b82f729 鎴愬姛锛夛細shim/build.sh --venus 3锛坴3 澶达紝dtb 涓嶆墦鍖呭憡璀﹀睘棰勬湡锛孉BL 浼犵湡 DTB锛夆啋 shim/out/shim-boot-venus.img 16,805,888B sha256 80bea8afd0c54df20c0ed6ba473354d24cb54547594c51654beb37c0ae22b1b1锛沰ernel 188,416B锛泆npack_boot.py 鍙嶉獙 ramdisk 涓?payload 瀛楄妭涓€鑷达紙UNPACK-CMP-OK锛夈€?
+- 銆怮EMU 鍙栬垗 [SKIPPED]銆戞寜璁″垝璺宠繃 loader 璺緞 QEMU 鍐掔儫锛氫袱鑰呯殑鍔ㄦ満鏄獙璇?shim 瀹朵欢璺宠繘 xnu锛屼絾 sweet 鐨?qemu-sweet.py 鏃?root fork 鏃?xnu 浼氬湪鏈€鏃╂湡 panic锛堝嵆浣垮姝や篃鍙鐩栧埌涓庣湡鏈虹瓑浠锋垨鏇村皯鐨勪俊鎭級锛宲robe 璺緞锛坬emu-venus.py锛変笉璇嗗埆 SWEETXNU payload锛泂him 瀹朵欢涓?fastboot boot 閫氳矾宸茶 S1 v4 鐪熸満锛堣摑搴曠櫧瀛楀疄璺碉級楠岃瘉銆傚洜姝ゅ垽瀹氱洿鎺ョ湡鏈虹殑淇℃伅澧炵泭鏇村ぇ銆?
+- 銆愮湡鏈?boot [DONE鈫扚AILED-UNKNOWN] 2026-10-19 13:19:36-13:19:37銆憊enus_boot_probe.sh 姝ｅ父璧板畬锛歛db 鍦ㄧ嚎 e528afbe 鈫?reboot bootloader 9s 鈫?fastboot unlocked=yes 鍙橀噺鏈洖璇伙紙getvar unlocked 鍑虹幇 waiting 瀛楁牱锛宑urrent-slot=b锛宮ax-download 805306368锛夆啋 Sending 16412KB OKAY 0.933s銆丅ooting OKAY 0.199s 鈫?瑙傚療绐楀紑濮嬨€?35s 璧?fastboot/adb 鍙岀绾匡紙澶氭澶嶆鍧囩┖锛夈€傛棤娉曚粠 Windows/ssh 渚х‘璇佸睆骞曞唴瀹癸紱鍒ゅ畾涓烘湭鐭ュけ璐ワ紙榛戝睆鍙兘鎬уぇ锛岄渶鐢ㄦ埛闀挎寜鐢垫簮鎭㈠骞跺洖鏀剁洰鍑讳俊鎭級銆備粎姝や竴娆★紝鏈仛绗簩娆?boot锛堟寜绾︼級銆?
+- 銆愬け璐ュ€欓€夋帓搴忥紙鏈獙璇侊紝鎸夋鐜囩洿瑙夛級銆戙€怱2.5/S3 褰掑睘寰呭畾銆?1) xnu 鍦?fbcon 璧锋潵涔嬪墠灏?panic鈥斺€擜DT /product 鑺傜偣缂哄け锛堜袱鏈哄潎鏃?research/ipsw-x/d22ap.adt锛孉pple 宸ヤ欢锛夛細S1 鍓嶄緥鏄剧ず xnu console 鏈?sweet-fbcon 鍏滃簳涓嶈嚦浜庡畬鍏ㄦ棤瀛楋紝浣嗕笉鑳芥帓闄ゆ瀬鏃╂湡 fault锛坱lb/cache 琛屼负鍦?SM8350 宸茬煡宸紓鏄€欓€夛級锛?2) shim 瀵?16.6MB payload 鐨勫娈垫嫹璐濆湪鐪熸満鍐呭瓨鏃跺簭涓婃湁鍧戯紙S1 鍙嫹璐濊繃 188KB 鐨?probe 娈碉級锛?3) fastboot boot 澶?ramdisk 浼犲弬鍚?shim 鏈纭嬁鍒?boot_args 鏌愬瓧娈点€備笅涓€杞缓璁細鎹㈡渶灏?cmdline 澶嶈窇涓€娆★紙鐢ㄦ埛鎺堟潈鍚庯級or 鍦?shim 閲岀粰 SWEETXNU 璺緞鍔犱竴琛?banner锛堝姞杞芥垚鍔熷嵆灏嗚烦 xnu锛夛紝鎶婂け璐ュ畾浣嶅湪 xnu 鍓?鍚庛€?
 
-## 2026-10-19（第五次）─ venus probe v4（FB 基址运行时从 DTB 读取 ─ 活机 splash_region 证据）
+## 2026-10-19锛堢涓冩锛夆攢 S5: initrd 杞戒綋 payload 鍖洪棿鎵弿锛堜慨澶?milestone 5 "no SWEETXNU payload"锛?- 銆愭牴鍥?[CONFIRMED-鐪熸満鐓х墖]銆戠敤鎴峰疄鎷?milestone 5 灞忥細INITRD lo/hi 鎵撳嵃涓烘湁鏁堝€?+ "no SWEETXNU payload" + **UFS 鍒嗗尯娓呭崟瀹屾暣杈撳嚭 鈫?UFS 椹卞姩鍦?venus 涓婂彧璇绘椿浣撳伐浣?PASS锛圫4 绗竴椤规彁鍓嶉獙鏀讹紝ufs.c 鏈姩涔熶笉璁稿姩锛?*銆傛牴鍥?= 灏忕背 ABL 浼犵粰 shim 鐨?initrd 鏄€寁endor ramdisk cpio 鎷兼帴 SWEETXNU payload銆嶏紝magic 涓嶅湪棣栧瓧鑺傦紝loader 鏃ч€昏緫鍙煡 rd_start 澶?8 瀛楄妭銆?- 銆愭敼鍔?[COMMITTED 鏈]銆憇him/loader.c锛歱ayload 瀹氫綅鏀逛负鍖洪棿鎵弿鈥斺€攔d_start..rd_end 鍐?4 瀛楄妭姝ヨ繘 linear search "SWEETXNU"锛? 瀛楄妭 head 姣旇緝锛屽鐢?magic_ok锛夛紱鍛戒腑鎵撳嵃 `INITRD payload found at +0x<off> (size 0x<n>)`锛涙墍鏈?payload 鐩稿 offset锛坰egs[].file_off / adt_off / 澶撮儴瀵归綈妫€鏌?rd_start&7 鏀?(rd_start+scanned)&7锛変笌鍩哄噯鏀逛负 rd_start+scanned锛涙湭鍛戒腑鎵撳嵃 `no SWEETXNU payload (scanned all of initrd)` 鍚庤蛋鍘?reset 璺緞锛宮5 鍕樻帰鐢婚潰鐣欑敤銆傛€ц兘锛殈17MB 4-byte stride 鏁?ms锛孧MU off 1:1 鏃?TLB 澶勭悊锛堜笉鏀?cache 閫昏緫锛宻weet 鍚岃娉曪級銆傚凡骞舵牳涓や晶 magic 瀛楅潰閲忥細mkpayload 浜х墿棣?64B hex `5357454554584e55010000000a000000`锛堢増鏈?1銆?0 娈碉級涓?loader.c "SWEETXNU" 涓€鑷淬€?- 銆愰獙璇?[BUILT 鐪熸満 boot 瑙?NOTES handoff銆戠瑪璁版湰 build.sh --venus 3锛坧ayload 涓嶉噸鎵擄級锛涚湡鏈?boot 閫氳繃 tools/venus_boot_probe.sh锛岃瀵熺獥鍙?45-60s锛屼笉浜屾 boot銆?- 銆愯瀵熷鐓ц〃銆慉 = `INITRD payload found` + `JUMP` + JUMPXNU 榻?鈫?XNU 宸茶烦锛屼箣鍚庣櫧瀛楋紙鍚?panic 鏂囨湰锛夐兘鏄?xnu 鎵撶殑锛?xE2A00000 鍚?FB锛夛紳涓嬩竴姝ユ姄 panic锛汢 = 鍙湁 found 鏃?JUMP 鈫?loader 姝诲湪璺宠浆鍓嶄竴姝ワ紱C = 浠?no payload 鈫?ABL cpio 鎷兼帴鏍煎紡鐞嗚В鏈夎锛屼笅涓€姝?dump initrd 棣?64MB 鍒板睆 hex锛堟垨 cpio TRAILER 瑙ｆ瀽锛夈€?
 
-- 【根因 [CONFIRMED-活机]】三次黑屏的原因是我们的 shim 画到了错误地址：静态 vendor_boot SoC DTB 的 `/reserved-memory/splash_region reg = 0xEA600000` 已被活机数据否定。活机 Linux 运行时 DT（内核 fdt，fdt_idx=4/dtbo_idx=46，model "Venus based on ... SM8350"，QHD 1440x3200 cmd 面板）导出为 `fdt_live.bin`，用 `Xiaomi11/tools/fdt_min.py` 解析得 **splash_region = base 0xE2A00000 size 0x2300000**。台账保留两点：(1) 静态 SoC DTB 值 0xEA600000 是 bootloader 未覆盖时的残留档；(2) ABL fastboot boot 时会给 shim 传自己的 DTB（x0），解析需自适应其值（v4 即为此设计）。工具说明：`dtb_nodes.py` 是早期手写解析器，对 NOP tag/嵌套跳动容忍不足（活机 DT 中有 FDT_NOP），已被 `fdt_min.py`（Xiaomi11/tools/，临时产物，不入 git）取代。
-- 【RAM banks [CONFIRMED-活机]】三条：`0x80000000/0x37500000`、`0xC0000000/0x140000000`、`0x200000000/0x180000000`（即 941MB + 5GB + 6GB ≈ 12GB）。
-- 【改动 [COMMITTED 本节 commit]】v4：(1) `shim/fdt.{c,h}` 新增 `fdt_get_reg(dtb, path, &base, &size)`——公共路径 walk 抽成 `fdt_walk_prop`，reg 支持 16B（2+2 cells，BE 双 u64，活机布局）与 8B（1+1 cells）两种编码；(2) `shim/venus_probe.c`：entry 首步即 `fdt_get_reg(dtb, "/reserved-memory/splash_region", ...)`，成功→fb_bases[0]=读到的 base，失败→回落 `VENUS_FB_BASE`；候选数组改为运行时填充 {base, base+0x02000000, 0x9C000000}（横扫保留）；banner 后新增 `FB base=... size=...` 与 `FB-SRC`（dtb 读到 or 回落）决策行；banner 改 "VENUS PROBE v4"；(3) `shim/soc_venus.h`：`VENUS_FB_BASE 默认改 0xE2A00000`（注释写明静态 dts 0xEA600000 已被活机数据否定，保留 VENUS_FB_BASE_STATIC_DTS 文档值）；QHD 就地生效（venus_probe.c `#define VENUS_PANEL_QHD 1`，ocv/未定义双路径安全，build.sh --venus 不带 qhd 参数即 QHD）。
-- 【QEMU 冒烟口径调整】新 shim 从 DTB 读基址而 QEMU virt 生成 DTB 无 /reserved-memory/splash_region → 必走回落 0xE2A00000；qemu-venus.py 的 fb_base 正则仍解析 soc_venus.h 的 VENUS_FB_BASE 字面值，恰好与新回落值一致（其 assert 只约束 VENUS_FB_STRIDE 形状，无碍）。QEMU 4G RAM 覆盖 0xE2A00000..0xE4D00000，快照/解码可正常判 `venus_probe_ok`；若 fb.txt 空则按 v4 降级判据：result.json+qemu.log 无 panic 即通过。
-- 【验证链】真机：`bash tools/venus_boot_probe.sh shim/out/shim-boot-venus.img`（venus_boot_probe.sh 不变，SYSTEM_OFF 尾段+10s 观察窗沿用 v3，不做二次 boot）。观察口径：屏幕应出现 "VENUS PROBE v4" + FB base/size/来源三行；若 fb 地址行 FB-SRC 显示回落且仍黑屏 → 下一步怀疑 dtbo 覆盖后的最终 DTB 或 ABL 传参路径。
-## 2026-10-19（第六次）─ S2.5 首次把 SWEETXNU payload 灌入 venus 真机（kernel.development.sweet + venus ADT）
-- 【载荷 [DONE]】kernel = CI run 39193640899 的 xnu/out/kernel.development.sweet（17,206,064B，sha256 de315bfaf63fc53e71028881321c74b71276ee657b31038a41cab2afa0f7dccf，与 xnu/out/SHA256SUMS 逐字节一致）；ADT = shim/out/venus-adt.bin（c3dceb02…a1c3e1d，双机一致）。tools/mkpayload.py 未改动（其现有 VMADDR/layout 逻辑对 venus ADT 直接适用）；无 --ramdisk（真机先跑无 root 的最小 shell，root fork 属 S3）。cmdline: debug=0xc serial=3 keepsyms=1 -noprogress（fbcon reg 0xE2A00000 已在 ADT 配好）。产物 shim/out/payload-venu0.bin：16,610,928B，sha256 65f3a115e53687ca5ec8fe2326ffb107a878114a1ebd28935b7cc2706348f21b，fixups=0（CI 内核未含 LC_DYLD_CHAINED_FIXUPS，属预期），virt_base 0xfffffe0006000000，entry 0xfffffe000748b488，kernel_end 0xfffffe00084c8000。
-- 【镜像 [DONE]】笔记本（~/ios-sweet-vp4 先 ff 到 b82f729；同步方式：bundle 前必须先查对端 HEAD——02593d3..b82f729 的 bundle 因笔记本缺 02593d3 基点而 fetch 失败，改 9a16744..b82f729 成功）：shim/build.sh --venus 3（v3 头，dtb 不打包告警属预期，ABL 传真 DTB）→ shim/out/shim-boot-venus.img 16,805,888B sha256 80bea8afd0c54df20c0ed6ba473354d24cb54547594c51654beb37c0ae22b1b1；kernel 188,416B；unpack_boot.py 反验 ramdisk 与 payload 字节一致（UNPACK-CMP-OK）。
-- 【QEMU 取舍 [SKIPPED]】按计划跳过 loader 路径 QEMU 冒烟：两者的动机是验证 shim 家件跳进 xnu，但 sweet 的 qemu-sweet.py 无 root fork 时 xnu 会在最早期 panic（即使如此也只覆盖到与真机等价或更少的信息），probe 路径（qemu-venus.py）不识别 SWEETXNU payload；shim 家件与 fastboot boot 通路已被 S1 v4 真机（蓝底白字实践）验证。因此判定直接真机的信息增益更大。
-- 【真机 boot [DONE→FAILED-UNKNOWN] 2026-10-19 13:19:36-13:19:37】venus_boot_probe.sh 正常走完：adb 在线 e528afbe → reboot bootloader 9s → fastboot unlocked=yes 变量未回读（getvar unlocked 出现 waiting 字样，current-slot=b，max-download 805306368）→ Sending 16412KB OKAY 0.933s、Booting OKAY 0.199s → 观察窗开始。+35s 起 fastboot/adb 双离线（多次复检均空）。无法从 Windows/ssh 侧确证屏幕内容；判定为未知失败（黑屏可能性大，需用户长按电源恢复并回收目击信息）。仅此一次，未做第二次 boot（按约）。
-- 【失败候选排序（未验证，按概率直觉）】【S2.5/S3 归属待定】(1) xnu 在 fbcon 起来之前就 panic——ADT /product 节点缺失（两机均无 research/ipsw-x/d22ap.adt，Apple 工件）：S1 前例显示 xnu console 有 sweet-fbcon 兜底不至于完全无字，但不能排除极早期 fault（tlb/cache 行为在 SM8350 已知差异是候选）；(2) shim 对 16.6MB payload 的多段拷贝在真机内存时序上有坑（S1 只拷贝过 188KB 的 probe 段）；(3) fastboot boot 大 ramdisk 传参后 shim 未正确拿到 boot_args 某字段。下一轮建议：换最小 cmdline 复跑一次（用户授权后）or 在 shim 里给 SWEETXNU 路径加一行 banner（加载成功即将跳 xnu），把失败定位在 xnu 前/后。
+## 2026-10-19锛堢鍏锛夆攢 venus 钃濆睆 SYNC 鏍瑰洜 = reset() 鍐?sweet IMEM 鍦板潃 + dump 琚簩娆¤鐩?- 銆愭牴鍥燵CONFIRMED-鍙嶆眹缂朷銆憇him.elf VMA=0 鍩恒€両mage 瑁呰浇浜?0xA0080000锛欵LR 0xA0081938 = `reset.constprop.0+0x74` 鐨?`str w1,[x0]`锛坸0=0x146aa65c銆亀1=0x77665500锛夛紝LR 0x18e4 = 鍚屽嚱鏁?con_str("RESET","in 40s") 杩斿洖鐐广€傚疄鎷嶈摑灞忔槸**绗簩娆″紓甯?*锛氱涓€娆″紓甯革紙鐪熷嚩锛孍LR 鍦?loader 闃舵锛屽€兼湭鍙婅褰曪級鈫?exc_handler 鐢昏摑 鈫?reset(40) 鈫?40s 鍚庡啓 0x146aa65c 鈫?venus 涓?data abort锛圗SR 0x96000010 DFSC=0x10 sync external锛孎AR=X0=0x146aa65c锛孹1=w 瀵勫瓨鍣ㄧ珛鍗虫暟褰㈡€侊級鈫?绗簩娆?exc_handler 閲嶇敾钃濊鐩栫涓€寮?鈫?姣忕害 40s 寰幆銆傜孩灞?3-5s 鍚庢秷澶?= INITRD 琛屾墦鍗板悗杩涘叆 35MB 瀛楄妭姝ヨ繘鎵弿鍗虫挒绗竴寮傚父锛圖UMP/LOADER 琛屼粠鏈埌杈撅級銆?- 銆愪慨澶峓COMMITTED]銆憇him/shim.c锛氣憼VENUS_PROBE 涓?IMEM 鍐欐敼涓?venus 鐪熷湴鍧€ `0x146bf65c`锛坴enus ABL DTB qcom,msm-imem@146bf000+restart_reason@65c锛岃 E:\Hackios\Xiaomi11\out\vboot_dtb_04..06.dts锛泂weet 鐨?0x146aa65c 鍘熷€间繚鐣欙級锛涒憽 exc_handler 鍦?VENUS_PROBE 涓?dump 鍚?HOLD锛圵FE锛夛紝涓嶅啀杩?reset() 鈥斺€?涓嬩竴 boot 钃濆睆鍗崇涓€鐜板満锛涒憿 reset() 鍐?IMEM 鍓嶅厛鎵?RSTREASON 琛屻€俿him/loader.c锛歱ayload 澶?deref 鍓嶅姞鍥猴紙version==1銆乶segs 1..16銆乵em_size/kernel_end鈭?0,0xC0000000]銆乸hys/virt/entry 闈?0銆乤dt_off/鍛戒腑鏈潃 8B 瀵归綈锛夛紝鎷?vendor cpio 鍋?SWEETXNU銆俿weet 榛樿鏋勫缓涓嶅彉銆?- 銆愯瀵熷鐓ц〃[涓嬩竴 boot]銆慉: 钃濆睆涓€娆″悗 HOLD 甯搁┗锛堟柊琛?HOLD/鈥渆xception screen stays鈥濓級鈫?绗竴鐜板満鍒版墜锛屾姤灞忎笂 ESR/ELR/FAR锛堥鏈熻惤鍦?loader_boot 鎵弿娈碉級锛汢: INITRD 鈥減ayload found at +0x鈥︹€?+ JUMP/JUMPXNU 鈫?鎵弿娲伙紝缁х画鐪?xnu锛汣: 鈥渂ad payload header鈥?鈫?鍋囧懡涓鎷掞紝闇€鎵?dump 瀹氫綅鐪?magic锛汥: 钃濆睆浠嶆瘡 ~40s 鎹㈡柊鍊硷紙鏈?RESET 琛屽嚭鐜帮級鈫?淇敊鏂瑰悜锛屾寜灞忎笂 ELR/FAR 閲嶅惎璋冩煡銆?
+## 2026-10-19锛堢涔濇锛夆攢 v2 payload 鐩撮€?+ loader 涓ゅ璇垽淇 + **XNU 棣栦寒锛坴enus 涓?XNU 鍙栧緱鎺у埗鏉冿級**
+- 銆愪笂娓稿鐓VERIFIED-README]銆憇weet 涓婃父鐢?boot v2 澶达紙mirror PixelOS锛夛紝payload 鏄敮涓€ ramdisk锛孉BL 鐩翠紶 initrd=payload 棣栧瓧鑺傗€斺€旀棤 vendor cpio 鎷兼帴銆倂enus 涔嬪墠鐢?v3 瑙﹀彂 GKI vendor 鎷兼帴锛?5MB 娣锋祦锛漨agic 鎵句笉鍒扮殑鏍瑰洜銆?- 銆愭敼鍔╗COMMITTED]銆憇him/build.sh锛?-venus 鎺ュ彈 2锛泇2 鎵撳寘闇€ --dtb锛坢kbootimg v2 寮哄埗锛夛紝鐢?E:\\Hackios\\Xiaomi11\\dtb\\vboot_dtb_04.dtb锛坉tb_idx=4 娲绘満瀵瑰簲锛夈€?- 銆恇oot(14:18)+瀹炴媿銆憊2 闀滃儚 INITRD=lo AF027000 hi AFFFE670=0xFD7670鈮坧ayload 0xFD57F0锛沺ayload found at +0x00000000锛漹2 绛栫暐鎴愮珛锛涢殢鍚?ad payload header銆?- 銆愯鍒?1[CONFIRMED+淇 680b729]銆?165861 鐨勫ご閮ㄥ姞鍥烘妸 kernel_end 褰撶墿鐞嗗ぇ灏忥紙>0xC0000000 鎷掞級锛屽疄娴?payload +0x30 kernel_end=0xfffffe00084c8000 鏄?VA 鈬?鎷掓帀鐪?payload銆備慨澶嶄负锛歷irt_base/entry/phys 闈?0锛宮em_size<=0x100000000锛宬ernel_end鈭圼virt_base, virt_base+0x20000000)銆?- 銆恇oot(14:39)+瀹炴媿銆慞HYS/VIRT/ENTRY 鎵撳嵃锛濆ご閫氳繃锛涢殢鍚?
+amdisk overlaps kernel memory銆?- 銆愯鍒?2[CONFIRMED+淇 02b70b1]銆戦噸鍙犳鏌ョ敤 mem_size=0x37500000锛圧AM bank 灏哄锛屼氦缁?XNU 鐨?memSize锛夎€岄潪鍐呮牳璺ㄥ害锛沬nitrd 0xAF027000 涓庡唴鏍哥洰鏍?0x80000000..kernel_end(+ADT+2*16K) 骞朵笉閲嶅彔銆傛敼涓烘寜 kernel_end 璺ㄥ害鍒ゅ畾銆?- 銆恇oot(14:49)+瀹炴媿锛濋噷绋嬬銆?*XNU panic 椤?*锛歱anic(cpu 0 caller 0xfffffe0007ad6490): Undefined kernel instruction: pc=0xfffffe000749鈥?instr=d51be228 @sleh.c:951锛媓andshake structure not initialized锛媝anic.apple.com 鎻愮ず锛漧oader/澶嶅埗/ADT/boot_args/鍏ュ彛璺宠浆鍏ㄨ XNU 鎺ュ彈锛孲3 棣栦寒杈炬垚銆?- 銆恜anic 瑙ｇ爜[VERIFIED-鏈湴浣嶅煙+OSS sleh.c]銆慸51be228=MSR (register) 鍐?**CNTP_CTL_EL0**锛圫3_3_C14_C2_1锛孯T=x8锛夆啋 UNDEFINED trap锛宻leh.c handle_uncategorized panic銆備咯鍋囪锛?H-EL2) shim/XNU 杩愯鍦?EL2锛?op0=3,op1=3) 鍦?EL2 涓婄粺涓€ UNDEFINED锛?H-PTIMER) venus/SM8350 鎶婄墿鐞?timer 鍏虫帀鎴栦笉瑙ｇ爜銆俿leh.c 鍏ㄦ枃宸插瓨鏈湴 greps锛沨andshake structure not initialized 瀛楃涓蹭笉鍦?sleh.c锛堝彟涓€鏉ユ簮锛屽緟瀹氫綅锛夈€?- 銆愬凡鐭ヤ笉鎸¤矾銆憈est_gic 鐨?GICR priority 鍐欑偢锛?e29ec1 宸?skip锛夛紱绾㈠睆 DUMP 閮ㄥ垎琚紓甯搁〉瑕嗙洊鐨勯棶棰樺凡鐢?loader 鍚庣洿鎺?HOLD 瑙ｅ喅銆?- 銆恆gent NOTE銆戠涓€娆?XNU-panic 鍒嗘瀽瀛愪唬鐞嗭紙ses_ead0c374鈥︼級completed 鏃犺緭鍑猴細鏈彂鐜板叾鐣欎笅鐨?commit/status 鏀瑰姩锛坓it 鐘舵€佸共鍑€锛寈nu/patches 鏈姩锛夛紝濡傛姤鍛婄己澶遍渶閲嶅仛鍏朵换鍔°€?
+## 绗崄娆★細payload 瀹樻柟瀵归綈 rebuild锛?026-10-19锛寁enus-probe锛?
+- 鐩殑锛氭妸 venus 鐨?payload/cmdline/鏋勫缓缁勮瀵归綈瀹樻柟 dipa-studio/ios-sweet 鏍囧噯娴佺▼锛泇enus 姝ゅ墠 cmdline 鍙湁 4 涓弬鏁帮紝杩滃皯浜庡畼鏂?phone 闀滃儚鏁翠覆銆傚亸绂绘竻鍗曪紙鍙垪涓嶆敼锛夊啓鍏?NOTES.md 灏忚妭 **official-alignment A**锛?0 鏉★紝鍚?RAM 鏀剧疆銆丆PU 鑺傜偣鏈€傞厤銆乴oader 鎵弿璇箟绛夛紝鍚勮嚜娉ㄦ槑淇濈暀鐞嗙敱锛夈€?- 鍙傛暟瑁佸喅锛?*cpus=1** 淇濆畧璧锋锛堝畼鏂?"cpus=6 starts the six A55 cores; cpus=1 safe fallback"锛泇enus big.LITTLE 鎷撴墤涓?sweet 涓嶅悓涓?ADT CPU 鑺傜偣鏈€傞厤 SM8350锛孲MP 鐣欏緟鍚庣画鎹?cpus=N锛夛紱**rd=ufsroot0 ufsrw=1 rootrw=1 甯︿笂**锛堢敤鎴疯繕娌″埛 iOS root锛屽甫涓婃湁濡ㄦ棤瀹斥€斺€旀棤 root 鏃?panic 璇箟鍙?root not found锛屼篃鏄儏鎶ワ級锛?*sweetfb_noconsole=1 / sweetfb_hz=30 涓嶅甫**锛坴enus fbcon 鏄綋鍓嶅敮涓€杈撳嚭閫氶亾锛屼笉鑳介潤闊?console锛夈€?- 鍐呮牳涓嶅姩涓嶆崲锛歺nu/out/kernel.development.sweet sha256 澶嶆牳 de315bfa鈥7dccf锛圕I run 39193640899锛夛紝涓庣涔濇涓€鑷达紝閬垮厤涓?XNU 渚т慨澶嶏紙CNTP_CTL_EL0 panic锛夊啿绐併€侫DT 娌跨敤 venus-adt.bin锛坈3dceb02鈥1c3e1d锛夈€?- 浜х墿锛歴him/out/payload-venu0.bin 16,610,928B sha256 **26e7a2ea312df7f76e19e9bcfe05a1200a34c7c4a466d2b78013466eaac58cff**锛坒ixups=0銆乿irt_base/entry 涓庣涔濇閫愬瓧娈典竴鑷粹€斺€斿彧鏈?cmdline 鍙樺寲锛夈€?- 鍙戝皠锛歜undle鈫抯cp鈫抐f 绗旇鏈?~/ios-sweet-vp4 鈫?build.sh --venus 2锛坴2 澶?+ /home/monster/vboot_dtb_04.dtb锛屾部鐢?19b 鎴愬姛閫氳矾锛夆啋 tools/venus_boot_probe.sh 鐪熸満锛堟湰浼氳瘽棰勭畻 2 娆?fastboot boot锛夈€傜粨鏋滆ˉ璁颁簬鏈妭鏈熬涓?NOTES.md 缃《 UPDATE銆?
 
-## 2026-10-19（第七次）─ S5: initrd 载体 payload 区间扫描（修复 milestone 5 "no SWEETXNU payload"）
-- 【根因 [CONFIRMED-真机照片]】用户实拍 milestone 5 屏：INITRD lo/hi 打印为有效值 + "no SWEETXNU payload" + **UFS 分区清单完整输出 → UFS 驱动在 venus 上只读活体工作 PASS（S4 第一项提前验收，ufs.c 未动也不许动）**。根因 = 小米 ABL 传给 shim 的 initrd 是「vendor ramdisk cpio 拼接 SWEETXNU payload」，magic 不在首字节，loader 旧逻辑只查 rd_start 头 8 字节。
-- 【改动 [COMMITTED 本次]】shim/loader.c：payload 定位改为区间扫描——rd_start..rd_end 内 4 字节步进 linear search "SWEETXNU"（8 字节 head 比较，复用 magic_ok）；命中打印 `INITRD payload found at +0x<off> (size 0x<n>)`；所有 payload 相对 offset（segs[].file_off / adt_off / 头部对齐检查 rd_start&7 改 (rd_start+scanned)&7）与基准改为 rd_start+scanned；未命中打印 `no SWEETXNU payload (scanned all of initrd)` 后走原 reset 路径，m5 勘探画面留用。性能：~17MB 4-byte stride 数 ms，MMU off 1:1 无 TLB 处理（不改 cache 逻辑，sweet 同读法）。已并核两侧 magic 字面量：mkpayload 产物首 64B hex `5357454554584e55010000000a000000`（版本 1、10 段）与 loader.c "SWEETXNU" 一致。
-- 【验证 [BUILT 真机 boot 见 NOTES handoff】笔记本 build.sh --venus 3（payload 不重打）；真机 boot 通过 tools/venus_boot_probe.sh，观察窗口 45-60s，不二次 boot。
-- 【观察对照表】A = `INITRD payload found` + `JUMP` + JUMPXNU 齐 → XNU 已跳，之后白字（含 panic 文本）都是 xnu 打的（0xE2A00000 同 FB）＝下一步抓 panic；B = 只有 found 无 JUMP → loader 死在跳转前一步；C = 仍 no payload → ABL cpio 拼接格式理解有误，下一步 dump initrd 首 64MB 到屏 hex（或 cpio TRAILER 解析）。
+## 2026-10-19锛堢鍗佷竴娆★級鈹€ 琛ュ厖锛歞22ap.adt 瀹樻柟璺嚎鎻愬彇锛坴enus-probe @729e4e1锛屾湰鍦板畬鎴愶紝鏃犵湡鏈烘搷浣滐級
+- 銆愬畼鏂瑰懡浠VERIFIED-README:94-95]銆戞寜 README 鍘熸牱鎵ц锛圵indows锛孭ython 3.11 + 瀹樻柟 blacktop/ipsw CLI v3.1.739 Windows x86_64 binary锛夛細
+  - `python tools/remotezip.py <URL> DeviceTree.d22ap.im4p research/ipsw-x/dt` 鈫?`Firmware/all_flash/DeviceTree.d22ap.im4p` 33719 bytes锛孋RC-32 ok銆?  - `ipsw img4 im4p extract research/ipsw-x/dt/Firmware/all_flash/DeviceTree.d22ap.im4p -o research/ipsw-x/d22ap.adt` 鈫?186084 bytes銆?- 銆怚PSW URL[VERIFIED-ipsw.me API+Apple 瀹樻柟 CDN]銆慽Phone10,3 iOS 16.7.16 build 20H392锛宍https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw`锛坕psw.me metadata: signed=true锛宺eleased 2026-05-11锛夈€傚彧 remotezip 鍗曟枃浠讹紝鏈笅杞芥暣涓?IPSW銆?- 銆愬搱甯岃剼娉╗鏈湴璁＄畻]銆慏eviceTree.d22ap.im4p sha256 = `480e8b0888949b4128b7aa2cd254497581c69e1bafa596a760b2fa955a8a6368`锛沝22ap.adt sha256 = `9e670987c80493bd69aba7be62e3179c04663324d9249b0973675baac175dbf1`銆?- 銆?product 澶嶅埗璺緞[VERIFIED-浠ｇ爜闆舵敼鍔╙銆憁kadt_venus.py 鐩存帴澶嶇敤 `mkadt.build(qemu=False)`锛宍mkadt.py:47 d22ap_product()` / `mkadt.py:212-213` 缁勮 `/product` 鑺傜偣锛涚己鐨勫彧鏄伐浠讹紙RESEARCH_LOG銆岄杞璁°€嶅け璐ュ€欓€?1 鍗虫锛夈€?-dump 纭鏂?venus-adt.bin `/product` 鍚?product-name 'iPhone X'銆乻andman-support銆乨isplay-mirroring 绛夊叡 61 椤瑰睘鎬с€?- 銆愪骇鐗REBUILT]銆慲shim/out/venus-adt.bin` 12740 bytes锛宻ha256 = `67dad381c16c60acbf6d14d3acbf4a492ca28e4c31362741cad8d7b9e38064d6`锛涙浛浠ｇ鍗佹璁板綍鐨勬棫 hash锛坈3dceb02鈥︼級銆侭 浠ｇ悊闇€鐢ㄦ柊 ADT 閲嶆墦 payload 鍐?boot銆?- 銆愬悎瑙勩€憆esearch/ipsw-x/ 鍦?.gitignore锛圓pple 鐗堟潈宸ヤ欢涓嶅叆 git锛孯EADME "Not in git: Apple firmware" 鍙ｅ緞涓€鑷达級锛涙湭 push銆?
 
-## 2026-10-19（第八次）─ venus 蓝屏 SYNC 根因 = reset() 写 sweet IMEM 地址 + dump 被二次覆盖
-- 【根因[CONFIRMED-反汇编]】shim.elf VMA=0 基、Image 装载于 0xA0080000：ELR 0xA0081938 = `reset.constprop.0+0x74` 的 `str w1,[x0]`（x0=0x146aa65c、w1=0x77665500），LR 0x18e4 = 同函数 con_str("RESET","in 40s") 返回点。实拍蓝屏是**第二次异常**：第一次异常（真凶，ELR 在 loader 阶段，值未及记录）→ exc_handler 画蓝 → reset(40) → 40s 后写 0x146aa65c → venus 上 data abort（ESR 0x96000010 DFSC=0x10 sync external，FAR=X0=0x146aa65c，X1=w 寄存器立即数形态）→ 第二次 exc_handler 重画蓝覆盖第一张 → 每约 40s 循环。红屏 3-5s 后消失 = INITRD 行打印后进入 35MB 字节步进扫描即撞第一异常（DUMP/LOADER 行从未到达）。
-- 【修复[COMMITTED]】shim/shim.c：①VENUS_PROBE 下 IMEM 写改为 venus 真地址 `0x146bf65c`（venus ABL DTB qcom,msm-imem@146bf000+restart_reason@65c，见 E:\Hackios\Xiaomi11\out\vboot_dtb_04..06.dts；sweet 的 0x146aa65c 原值保留）；② exc_handler 在 VENUS_PROBE 下 dump 后 HOLD（WFE），不再进 reset() —— 下一 boot 蓝屏即第一现场；③ reset() 写 IMEM 前先打 RSTREASON 行。shim/loader.c：payload 头 deref 前加固（version==1、nsegs 1..16、mem_size/kernel_end∈(0,0xC0000000]、phys/virt/entry 非 0、adt_off/命中本址 8B 对齐），拒 vendor cpio 假 SWEETXNU。sweet 默认构建不变。
-- 【观察对照表[下一 boot]】A: 蓝屏一次后 HOLD 常驻（新行 HOLD/“exception screen stays”）→ 第一现场到手，报屏上 ESR/ELR/FAR（预期落在 loader_boot 扫描段）；B: INITRD “payload found at +0x…” + JUMP/JUMPXNU → 扫描活，继续看 xnu；C: “bad payload header” → 假命中被拒，需扩 dump 定位真 magic；D: 蓝屏仍每 ~40s 换新值（有 RESET 行出现）→ 修错方向，按屏上 ELR/FAR 重启调查。
+### 绗崄娆¤ˉ璁帮紙鏈 boot锛?- 绗旇鏈?~/ios-sweet-vp4锛歠f 鍒?1730084 澶辫触涓ゆ锛坆undle ref 鍚嶄负 HEAD 璇箟鎬紝鏀惧純 bundle锛涗絾 execute 宸殑 commit 1730084 鍙敼 NOTES/RESEARCH_LOG 鏂囨。銆佹棤浠ｇ爜宸紓锛屾晠绗旇鏈?02b70b1 鏋勫缓鍦ㄥ姛鑳戒笂涓庢湰杞畬鍏ㄧ瓑浠凤級銆傞€氳繃 bundle-fetch 鎷変笉璧版槸鎴戜笅鐨勫弬鏁伴敊浣嶏紙refs/heads/HEAD锛夛紝涓ゅ嚮姝€?- build.sh 鍙傛暟鍧戯細cd\"\" 鍚?cwd=shim/锛宲ayload 瀹炲弬搴斾负 out/鈥︼紱鐢?shim/out/鈥?浼?cp stat 澶辫触骞舵妸鑰?ramdisk 鎵撹繘闀滃儚锛堟湰娆＄涓€鍙戝氨涓嫑锛岄殢鍚?UNPACK-CMP-OK 楠岃瘉閫氳繃鎵嶅彂灏勶級銆?- boot#1 15:46:19 鍙戝皠锛坒astboot boot OKAY锛宮ax-download 805306368锛宻lot b锛寀nlocked锛夛紝瑙傚療绐楀悗璁惧 fastboot/adb 鍙岀绾?= XNU panic 鍓栭潰涓嶅彉銆傝浣犳媿鐓у苟鍒よ灞忓箷锛坧anic 鍏ㄦ枃/绾㈠睆 DUMP/榛戝睆锛夛紝鍒よ缁撴灉璁板叆涓嬩竴杞€俠oot#2 淇濈暀銆?- 浜х墿锛歴him-boot-venus.img 17,289,216B sha256 73b89ee21a2c319a5e9ef98e1d96b70699edc7b5c895f719362e67f005ea08e5锛沺ayload sha256 26e7a2ea鈥︼紙瑙佷笂娈碉級銆?
 
-## 2026-10-19（第九次）─ v2 payload 直通 + loader 两处误判修复 + **XNU 首亮（venus 上 XNU 取得控制权）**
-- 【上游对照[VERIFIED-README]】sweet 上游用 boot v2 头（mirror PixelOS），payload 是唯一 ramdisk，ABL 直传 initrd=payload 首字节——无 vendor cpio 拼接。venus 之前用 v3 触发 GKI vendor 拼接＝35MB 混流＝magic 找不到的根因。
-- 【改动[COMMITTED]】shim/build.sh：--venus 接受 2；v2 打包需 --dtb（mkbootimg v2 强制），用 E:\\Hackios\\Xiaomi11\\dtb\\vboot_dtb_04.dtb（dtb_idx=4 活机对应）。
-- 【boot(14:18)+实拍】v2 镜像 INITRD=lo AF027000 hi AFFFE670=0xFD7670≈payload 0xFD57F0；payload found at +0x00000000＝v2 策略成立；随后 ad payload header。
-- 【误判#1[CONFIRMED+修复 680b729]】8165861 的头部加固把 kernel_end 当物理大小（>0xC0000000 拒），实测 payload +0x30 kernel_end=0xfffffe00084c8000 是 VA ⇒ 拒掉真 payload。修复为：virt_base/entry/phys 非 0，mem_size<=0x100000000，kernel_end∈[virt_base, virt_base+0x20000000)。
-- 【boot(14:39)+实拍】PHYS/VIRT/ENTRY 打印＝头通过；随后 
-amdisk overlaps kernel memory。
-- 【误判#2[CONFIRMED+修复 02b70b1]】重叠检查用 mem_size=0x37500000（RAM bank 尺寸，交给 XNU 的 memSize）而非内核跨度；initrd 0xAF027000 与内核目标 0x80000000..kernel_end(+ADT+2*16K) 并不重叠。改为按 kernel_end 跨度判定。
-- 【boot(14:49)+实拍＝里程碑】**XNU panic 页**：panic(cpu 0 caller 0xfffffe0007ad6490): Undefined kernel instruction: pc=0xfffffe000749… instr=d51be228 @sleh.c:951＋handshake structure not initialized＋panic.apple.com 提示＝loader/复制/ADT/boot_args/入口跳转全被 XNU 接受，S3 首亮达成。
-- 【panic 解码[VERIFIED-本地位域+OSS sleh.c]】d51be228=MSR (register) 写 **CNTP_CTL_EL0**（S3_3_C14_C2_1，RT=x8）→ UNDEFINED trap，sleh.c handle_uncategorized panic。俩假说：(H-EL2) shim/XNU 运行在 EL2，(op0=3,op1=3) 在 EL2 上统一 UNDEFINED；(H-PTIMER) venus/SM8350 把物理 timer 关掉或不解码。sleh.c 全文已存本地 greps；handshake structure not initialized 字符串不在 sleh.c（另一来源，待定位）。
-- 【已知不挡路】test_gic 的 GICR priority 写炸（6e29ec1 已 skip）；红屏 DUMP 部分被异常页覆盖的问题已由 loader 后直接 HOLD 解决。
-- 【agent NOTE】第一次 XNU-panic 分析子代理（ses_ead0c374…）completed 无输出：未发现其留下的 commit/status 改动（git 状态干净，xnu/patches 未动），如报告缺失需重做其任务。
-
-## 第十次：payload 官方对齐 rebuild（2026-10-19，venus-probe）
-
-- 目的：把 venus 的 payload/cmdline/构建组装对齐官方 dipa-studio/ios-sweet 标准流程；venus 此前 cmdline 只有 4 个参数，远少于官方 phone 镜像整串。偏离清单（只列不改）写入 NOTES.md 小节 **official-alignment A**（10 条，含 RAM 放置、CPU 节点未适配、loader 扫描语义等，各自注明保留理由）。
-- 参数裁决：**cpus=1** 保守起步（官方 "cpus=6 starts the six A55 cores; cpus=1 safe fallback"；venus big.LITTLE 拓扑与 sweet 不同且 ADT CPU 节点未适配 SM8350，SMP 留待后续换 cpus=N）；**rd=ufsroot0 ufsrw=1 rootrw=1 带上**（用户还没刷 iOS root，带上有妨无害——无 root 时 panic 语义变 root not found，也是情报）；**sweetfb_noconsole=1 / sweetfb_hz=30 不带**（venus fbcon 是当前唯一输出通道，不能静音 console）。
-- 内核不动不换：xnu/out/kernel.development.sweet sha256 复核 de315bfa…f7dccf（CI run 39193640899），与第九次一致，避免与 XNU 侧修复（CNTP_CTL_EL0 panic）冲突。ADT 沿用 venus-adt.bin（c3dceb02…a1c3e1d）。
-- 产物：shim/out/payload-venu0.bin 16,610,928B sha256 **26e7a2ea312df7f76e19e9bcfe05a1200a34c7c4a466d2b78013466eaac58cff**（fixups=0、virt_base/entry 与第九次逐字段一致——只有 cmdline 变化）。
-- 发射：bundle→scp→ff 笔记本 ~/ios-sweet-vp4 → build.sh --venus 2（v2 头 + /home/monster/vboot_dtb_04.dtb，沿用 19b 成功通路）→ tools/venus_boot_probe.sh 真机（本会话预算 2 次 fastboot boot）。结果补记于本节末尾与 NOTES.md 置顶 UPDATE。
-
-## 2026-10-19（第十一次）─ 补充：d22ap.adt 官方路线提取（venus-probe @729e4e1，本地完成，无真机操作）
-- 【官方命令[VERIFIED-README:94-95]】按 README 原样执行（Windows，Python 3.11 + 官方 blacktop/ipsw CLI v3.1.739 Windows x86_64 binary）：
-  - `python tools/remotezip.py <URL> DeviceTree.d22ap.im4p research/ipsw-x/dt` → `Firmware/all_flash/DeviceTree.d22ap.im4p` 33719 bytes，CRC-32 ok。
-  - `ipsw img4 im4p extract research/ipsw-x/dt/Firmware/all_flash/DeviceTree.d22ap.im4p -o research/ipsw-x/d22ap.adt` → 186084 bytes。
-- 【IPSW URL[VERIFIED-ipsw.me API+Apple 官方 CDN]】iPhone10,3 iOS 16.7.16 build 20H392，`https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw`（ipsw.me metadata: signed=true，released 2026-05-11）。只 remotezip 单文件，未下载整个 IPSW。
-- 【哈希脚注[本地计算]】DeviceTree.d22ap.im4p sha256 = `480e8b0888949b4128b7aa2cd254497581c69e1bafa596a760b2fa955a8a6368`；d22ap.adt sha256 = `9e670987c80493bd69aba7be62e3179c04663324d9249b0973675baac175dbf1`。
-- 【/product 复制路径[VERIFIED-代码零改动]】mkadt_venus.py 直接复用 `mkadt.build(qemu=False)`，`mkadt.py:47 d22ap_product()` / `mkadt.py:212-213` 组装 `/product` 节点；缺的只是工件（RESEARCH_LOG「首轮审计」失败候选 1 即此）。--dump 确认新 venus-adt.bin `/product` 含 product-name 'iPhone X'、sandman-support、display-mirroring 等共 61 项属性。
-- 【产物[REBUILT]】`shim/out/venus-adt.bin` 12740 bytes，sha256 = `67dad381c16c60acbf6d14d3acbf4a492ca28e4c31362741cad8d7b9e38064d6`；替代第十次记录的旧 hash（c3dceb02…）。B 代理需用新 ADT 重打 payload 再 boot。
-- 【合规】research/ipsw-x/ 在 .gitignore（Apple 版权工件不入 git，README "Not in git: Apple firmware" 口径一致）；未 push。

@@ -45,7 +45,12 @@
 `debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1`
 
 - 内核不动不换：xnu/out/kernel.development.sweet sha256 复核 `de315bfa…f7dccf`（CI run 39193640899）与 S2.5 一致；ADT 沿用 shim/out/venus-adt.bin（c3dceb02…a1c3e1d）。
-- （boot#1/#2 结果与产物 sha 见下方补记。）
+- **boot#1 已发射 2026-10-19 15:46:19:0x（fastboot OKAY，日志 logs/venus-probe-20261019-154606.log）**，boot 后 fastboot/adb 双离线（与既有 XNU-panic 剖面一致）。**boot#2 未用**：同一镜像再发射无增量信息，保留给 A 的内核侧 CNTP_CTL_EL0 修复落地后的下一实验。※ 镜像构建坑（已修）：LINUX 上 build.sh --venus 的 payload 参数要用 **shim 相对路径 `out/payload-venu0.bin`**（脚本内部 cd shim/，仓库根相对路径 `shim/out/...` 会报 cp stat 失败且出旧 ramdisk 镜像 — 本轮踩过并已 unpack_bootv2 UNPACK-CMP-OK 复验 73b89ee2 版本）。
+- **【请拍照：开机后屏幕现在显示什么？】重点拍：panic 页全文（panic caller/pc/instr 与文件行号）、若 shim 红屏则拍全部 DUMP hex 行、若黑屏注明黑屏。现象决定下一轮方向。**
+
+本轮产物：
+- payload-venu0.bin：16,610,928B sha256 `26e7a2ea312df7f76e19e9bcfe05a1200a34c7c4a466d2b78013466eaac58cff`（内核=CI 39193640899 同物，ADT=c3dceb02…a1c3e1d，只有 cmdline 变化）
+- shim-boot-venus.img（笔记本构建，v2 头 + vboot_dtb_04.dtb）：17,289,216B sha256 `73b89ee21a2c319a5e9ef98e1d96b70699edc7b5c895f719362e67f005ea08e5`
 
 ### >>> UPDATE 2026-10-19c **XNU 首亮达成**：panic(cpu 0) Undefined kernel instruction（最先读）<<<
 
