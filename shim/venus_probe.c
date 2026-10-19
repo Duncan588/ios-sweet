@@ -43,7 +43,7 @@ static int str_eq(const char *a, const char *b)
 
 static uint64_t psci_call(uintptr_t dtb, uint64_t fn)
 {
-	char method[8];
+	char method[8] = {0};
 
 	if (fdt_get_string(dtb, "/psci", "method", method, sizeof(method)) &&
 	    str_eq(method, "hvc"))
@@ -75,7 +75,7 @@ int venus_probe_entry(uintptr_t dtb)
 		con_str("INITRD", "absent in /chosen (vendor_boot ramdisk not wired)");
 	con_hex("CNTFRQ_EL0", rsr("cntfrq_el0"));
 	{
-		char method[8];
+		char method[8] = {0};
 		fdt_get_string(dtb, "/psci", "method", method, sizeof(method));
 		con_str("PSCI method", method[0] ? method : "absent in DTB (assuming smc)");
 		con_hex("PSCI ver", psci_call(dtb, PSCI_VERSION));

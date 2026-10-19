@@ -87,22 +87,26 @@ int fdt_get_string(uintptr_t fdt, const char *path, const char *prop, char *out,
 		case FDT_BEGIN_NODE: {
 			const char *name = (const char *)p;
 			depth++;
-			if (pm == depth - 1 && node_match(name, comp[pm], comp_len[pm]))
+			/* depth-2 = non-root ancestors so far; match when every
+			 * previous component matched (depth 1 == root matches
+			 * nothing). Final node always sits at depth ncomp+1. */
+			if (pm < ncomp && pm == depth - 2 &&
+			    node_match(name, comp[pm], comp_len[pm]))
 				pm++;
 			p = align4(skip_str(p));
 			break;
 		}
 		case FDT_END_NODE:
-			if (pm == ncomp && depth == ncomp)
+			if (pm == ncomp && depth == ncomp + 1)
 				return 0;	/* left the node without the prop */
-			if (pm == depth)
+			if (pm == depth - 1)
 				pm--;
 			depth--;
 			break;
 		case FDT_PROP: {
 			uint32_t plen = be32(p), nameoff = be32(p + 4);
 			uintptr_t val = p + 8;
-			if (pm == ncomp && depth == ncomp &&
+			if (pm == ncomp && depth == ncomp + 1 &&
 			    streq((const char *)(strings + nameoff), prop)) {
 				int i;
 				for (i = 0; i < len - 1 && (int)plen > i && *(volatile char *)(val + i); i++)
