@@ -141,10 +141,11 @@ const char *loader_boot(uintptr_t dtb)
 	/* Header sanity BEFORE trusting any dependent field: a stray match in
 	 * the vendor cpio (or a torn scan hit) must be rejected, not deref'd
 	 * into wild copies. */
-	if (p->version != 1 || p->nsegs == 0 || p->nsegs > 16 ||
-	    p->mem_size == 0 || p->mem_size > 0xC0000000ULL ||
-	    p->kernel_end == 0 || p->kernel_end > 0xC0000000ULL ||
-	    p->phys_base == 0 || p->virt_base == 0 || p->entry_va == 0 ||
+	if (p->version != 1 || p->nsegs == 0 || p->nsegs > 32 ||
+	    p->virt_base == 0 || p->entry_va == 0 ||
+	    p->phys_base == 0 || p->phys_base > 0x200000000ULL ||
+	    p->mem_size == 0 || p->mem_size > 0x100000000ULL ||
+	    p->kernel_end < p->virt_base || p->kernel_end > p->virt_base + 0x20000000ULL ||
 	    (p->adt_off & 7) || ((rd_start + scanned) & 7))
 		return "bad payload header";
 
