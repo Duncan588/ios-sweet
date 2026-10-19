@@ -1,0 +1,509 @@
+xnu: 0092 sweet drill the silent reset funnel after the trust caches
+
+Drill after boot#21 (0091 kernel): the console ran to
+"SWEET: trust caches unavailable (Image4/AMFI not installed)" and then
+the phone silently rebooted with no further fbcon output.  Patches
+0010/0089 already force every panic() through the framebuffer
+(sweet_early_panic / sweet_early_panic_flush print the panic story
+before any panic machinery stalls), and none of their lines ever
+appeared: boot#21 did not die inside a panic().  The reset happened
+outside the kernel panic path: either the xnu reboot funnels
+(PEHaltRestart / halt_all_cpus) were driven from a non-panic path, a
+fatal CPU exception reached the EL1 vectors without panicking, or a
+platform/firmware actor reset the SoC on its own (QCOM watchdog/TZ)
+- or a real panic flashed past and was wiped before the phone could be
+filmed.
+
+This patch names every door with one P0092 line, everything inside
+#if defined(ARM64_BOARD_CONFIG_SWEET) (the panic-freeze helper lives in
+the pre-existing SWEET-gated sweet_early.c), so the next photo either
+shows the funnel that rebooted the phone or stops at the last beat
+reached:
+
+- startup.c kernel_bootstrap_thread: explicit prints around the last
+  free-standing setup calls between the trust caches and bsd_init:
+  OSKextRemoveKextBootstrap, machine_lockdown, kernel_do_post,
+  PE_lockdown_iokit, bsd_init enter/return.  (The pre-existing
+  kernel_bootstrap_log() strings only print with STARTUP_DEBUG_VERBOSE,
+  so they are silent on the real phone.)
+- bsd_init.c: entry/milestones (mac_policy_initbsd, vfsinit,
+  bsd_autoconf, setconf/IOFindBSDRoot, vfs_mountroot result, root
+  vnode set, bsd_utaskbootstrap, done).
+- iokit/bsddev/IOKitBSDInit.cpp: IOKitBSDInit entry, IOFindBSDRoot
+  entry + parsed rd= value, the SWEET ufsroot0 branch.
+- bsd/dev/sweet_ufs.c: sweet_ufs_rootdev entry and sweet_ufs_init
+  steps (DT node, reg map, DMA block, host takeover, partition probe),
+  so "SWEET UFS:" is no longer the very first signal from that file.
+- bsd/kern/sweet_amfi.c: the bsd-phase AMFI/sandbox registration.
+- osfmk/arm64/machine_routines.c + iokit/Kernel/IOPlatformExpert.cpp:
+  halt_all_cpus and PEHaltRestartInternal - every kPERestartCPU /
+  kPEHaltCPU / panic restart passes through the latter - print
+  type/details on entry.  This answers "who asked for the reboot".
+- osfmk/arm64/sleh.c: one line at the entry of sleh_serror and
+  sleh_synchronous (SVC64 excluded so syscalls stay silent) in case
+  the death is an exception the kernel sees but never panics from.
+- panic freeze (UniXNU-style): with boot-arg sweetpanicfreeze=1,
+  panic_trap_to_debugger() calls the new sweet_early_panic_freeze(),
+  which forces the early framebuffer console back on, repeats the
+  panic reason under a "=== PANIC FREEZE (P0092) ===" banner, masks
+  DAIF and sits in wfi - the screen keeps the story and the boot never
+  reaches the reboot tail even if something would have wiped it.
+  Without the boot-arg nothing changes.
+
+Boot#22 reading table: any terminal "P0092: PEHaltRestartInternal ... /
+halt_all_cpus" line names a kernel-driven reset; a terminal P0092 or
+SWEET line without a funnel line after it means the kernel died or was
+reset from outside xnu; with sweetpanicfreeze=1 any panic shows the
+banner instead of silently rebooting.  Other arm64 boards unchanged.
+
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 6b926fe..323c91b 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -586,6 +586,9 @@ static const struct cdevsw sweet_ufs_cdevsw = {
+ static int
+ sweet_ufs_init(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: sweet_ufs_init enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	DTEntry node;
+ 	uintptr_t const *reg = NULL;
+ 	unsigned int size = 0;
+@@ -608,6 +611,10 @@ sweet_ufs_init(void)
+ 	su.wait = (wait == 1);
+ 
+ 	su.regs = ml_io_map(reg[0], reg[1]);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: sweet_ufs_init: regs 0x%llx size 0x%llx\n",
++	    (unsigned long long)reg[0], (unsigned long long)reg[1]);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("SWEET UFS: no contiguous DMA memory\n");
+@@ -618,10 +625,17 @@ sweet_ufs_init(void)
+ 		return ENOMEM;
+ 	}
+ 	su.dma_pa = ptoa_64(pn);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: sweet_ufs_init: dma 0x%llx\n",
++	    (unsigned long long)su.dma_pa);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	su.lun = 0;
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: sweet_ufs_init: ufs_take_over_host enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	error = ufs_take_over_host();
+ 	if (!error) {
+ 		static const uint8_t tur[6] = { 0x00 };
+@@ -633,6 +647,9 @@ sweet_ufs_init(void)
+ 		error = ufs_find_partition(want);
+ 	}
+ 	lck_mtx_unlock(&sweet_ufs_lock);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: sweet_ufs_init: takeover+partition probe err=%d\n", error);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	if (error) {
+ 		return error;
+ 	}
+@@ -811,6 +828,9 @@ int sweet_ufs_rootdev(dev_t *dev);
+ int
+ sweet_ufs_rootdev(dev_t *dev)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: sweet_ufs_rootdev enter (ready=%d)\n", su.ready);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	if (!su.ready) {
+ 		int error = sweet_ufs_init();
+ 		if (error) {
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..8db5c5c 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -482,6 +482,9 @@ bsd_init(void)
+ 		.p_csflags = CS_VALID,
+ 	};
+ 	struct task_ro_data kerntask_ro_data = { };
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: bsd_init enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ #if CONFIG_NETBOOT || CONFIG_IMAGEBOOT
+ 	boolean_t       netboot = FALSE;
+ #endif
+@@ -568,6 +571,9 @@ bsd_init(void)
+ 	 * Initialize the MAC Framework
+ 	 */
+ 	mac_policy_initbsd();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: bsd_init: mac_policy_initbsd done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ #if defined (__i386__) || defined (__x86_64__)
+ 	/*
+@@ -690,6 +696,9 @@ bsd_init(void)
+ 	/* Initialize the file systems. */
+ 	bsd_init_kprintf("calling vfsinit\n");
+ 	vfsinit();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: bsd_init: vfsinit done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	/* AMFI's MAC policy is built in on SWEET (bsd/kern/sweet_amfi.c). */
+@@ -799,6 +808,9 @@ bsd_init(void)
+ 
+ 	bsd_init_kprintf("calling bsd_autoconf\n");
+ 	bsd_autoconf();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: bsd_init: bsd_autoconf done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ #if CONFIG_DTRACE
+ 	dtrace_postinit();
+@@ -879,7 +891,14 @@ bsd_init(void)
+ #endif
+ 
+ 		bsd_init_kprintf("vfs_mountroot\n");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* P0092: mountroot result; the loop only retries on error. */
++		err = vfs_mountroot();
++		printf("P0092: bsd_init: vfs_mountroot err=%d\n", err);
++		if (err == 0) {
++#else
+ 		if (0 == (err = vfs_mountroot())) {
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 			break;
+ 		}
+ 		rootdevice[0] = '\0';
+@@ -914,6 +933,9 @@ bsd_init(void)
+ 	lck_rw_lock_exclusive(&rootvnode_rw_lock);
+ 	set_rootvnode(init_rootvnode);
+ 	lck_rw_unlock_exclusive(&rootvnode_rw_lock);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: bsd_init: root vnode set\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	init_rootvnode = NULLVP;  /* use rootvnode after this point */
+ 
+ 
+@@ -1045,6 +1067,9 @@ bsd_init(void)
+ 
+ 	bsd_init_kprintf("calling bsd_utaskbootstrap\n");
+ 	bsd_utaskbootstrap();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: bsd_init: bsd_utaskbootstrap done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ 	pal_kernel_announce();
+ 
+@@ -1069,6 +1094,9 @@ bsd_init(void)
+ 	machine_timeout_bsd_init();
+ #endif /* DEVELOPMENT || DEBUG */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: bsd_init done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	bsd_init_kprintf("done\n");
+ }
+ 
+@@ -1131,7 +1159,13 @@ setconf(void)
+ 	u_int32_t       flags;
+ 	kern_return_t   err;
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: setconf: calling IOFindBSDRoot\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	err = IOFindBSDRoot(rootdevice, sizeof(rootdevice), &rootdev, &flags);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: setconf: IOFindBSDRoot err=%d\n", err);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	if (err) {
+ 		printf("setconf: IOFindBSDRoot returned an error (%d);"
+ 		    "setting rootdevice to 'sd0a'.\n", err);     /* XXX DEBUG TEMP */
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index cb67b4d..74f41a9 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -373,6 +373,9 @@ void sweet_amfi_policy_register(void);
+ void
+ sweet_amfi_policy_register(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: sweet_amfi_policy_register enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	int error = mac_policy_register(&sweet_amfi_mac_conf, &sweet_amfi_mac_handle, NULL);
+ 	printf("SWEET AMFI: platform binary policy %s (%d)\n",
+ 	    error ? "NOT registered" : "registered", error);
+diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
+index 7a32a23..9c8111b 100644
+--- a/iokit/Kernel/IOPlatformExpert.cpp
++++ b/iokit/Kernel/IOPlatformExpert.cpp
+@@ -985,6 +985,10 @@ int
+ PEHaltRestartInternal(unsigned int type, uint32_t details)
+ {
+ 	IOPMrootDomain    *pmRootDomain;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* P0092: every reboot/halt funnel passes here - name the request. */
++	printf("P0092: PEHaltRestartInternal type=%d details=0x%x\n", type, details);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	AbsoluteTime      deadline;
+ 	thread_call_t     shutdown_hang;
+ 	IORegistryEntry   *node;
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index e6c74aa..3a1be5f 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -110,6 +110,10 @@ kern_return_t
+ IOKitBSDInit( void )
+ {
+ 	IOService::publishResource("IOBSD");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* P0092: bsd_autoconf reached IOKitBSDInit. */
++	printf("P0092: IOKitBSDInit enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ #if IOPOLLED_COREFILE
+ 	corefile_open_call = thread_call_allocate_with_options(IOOpenPolledCoreFile, NULL, THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
+@@ -706,6 +710,9 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 	    && !PE_parse_boot_argn("rootdev", rdBootVar, kMaxBootVar )) {
+ 		rdBootVar[0] = 0;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: IOFindBSDRoot: rd=\"%s\"\n", rdBootVar);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ 	if ((regEntry = IORegistryEntry::fromPath( "/chosen", gIODTPlane ))) {
+ 		do {
+@@ -771,6 +778,9 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ //	SWEET: root on a GPT partition of the internal UFS (bsd/dev/sweet_ufs.c)
+ //
+ 	if (strcmp(rdBootVar, "ufsroot0") == 0) {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		printf("P0092: IOFindBSDRoot: sweet ufsroot0 branch\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 		extern int sweet_ufs_rootdev(dev_t *dev);
+ 		OSSafeReleaseNULL(matching);
+ 		int ufs_error = sweet_ufs_rootdev(root);
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index f032b62..501246a 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -746,6 +746,10 @@ __attribute__((noreturn))
+ void
+ halt_all_cpus(boolean_t reboot)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* P0092: the "MACH Reboot"/"CPU halted" funnel - name it first. */
++	printf("P0092: halt_all_cpus(reboot=%d)\n", reboot);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	if (reboot) {
+ 		printf("MACH Reboot\n");
+ 		PEHaltRestart(kPERestartCPU);
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 24f1abc..4492d11 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -602,6 +602,16 @@ void
+ sleh_synchronous(arm_context_t *context, uint32_t esr, vm_offset_t far)
+ {
+ 	esr_exception_class_t  class   = ESR_EC(esr);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * P0092: fatal-ish sync exceptions; SVC64 (EC 0x15) is the normal
++	 * syscall path and would flood the console.
++	 */
++	if (class != 0x15) {
++		printf("P0092: sync exception esr=0x%08x far=0x%llx\n",
++		    esr, (unsigned long long)far);
++	}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	arm_saved_state_t    * state   = &context->ss;
+ 	thread_t               thread  = current_thread();
+ #if MACH_ASSERT
+@@ -2022,6 +2032,10 @@ sleh_fiq(arm_saved_state_t *state)
+ void
+ sleh_serror(arm_context_t *context, uint32_t esr, vm_offset_t far)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: SError esr=0x%08x far=0x%llx\n",
++	    esr, (unsigned long long)far);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	task_vtimer_check(current_thread());
+ 
+ 	KDBG_RELEASE(MACHDBG_CODE(DBG_MACH_EXCP_SERR_ARM, 0) | DBG_FUNC_START,
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 24931e9..51cdcea 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -10,6 +10,7 @@
+ #if defined(SWEET)
+ #include <stdint.h>
+ #include <kern/misc_protos.h>
++#include <pexpert/pexpert.h>
+ 
+ static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
+ #define EARLY_FB early_fb
+@@ -165,6 +166,55 @@ sweet_early_panic_flush(const char *fmt, va_list *args, unsigned long caller)
+ 	early_disabled = saved_disabled;
+ }
+ 
++/*
++ * 0092: with boot-arg sweetpanicfreeze=<n> a panic freezes the screen
++ * (UniXNU style) instead of flashing the reboot tail: force the early
++ * fb console back on, repeat the panic reason under a banner, mask
++ * DAIF and sit in wfi.  Without the boot-arg this returns at once.
++ */
++static int sweet_panicfreeze_parsed;
++static unsigned int sweet_panicfreeze_wanted;
++
++void
++sweet_early_panic_freeze(const char *fmt, va_list *args, unsigned long caller)
++{
++	static const char p92dig[16] = {
++		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
++		'a', 'b', 'c', 'd', 'e', 'f'
++	};
++
++	if (!sweet_panicfreeze_parsed) {
++		(void) PE_parse_boot_argn("sweetpanicfreeze",
++		    &sweet_panicfreeze_wanted, sizeof(sweet_panicfreeze_wanted));
++		sweet_panicfreeze_parsed = 1;
++	}
++	if (!sweet_panicfreeze_wanted) {
++		return;
++	}
++
++	early_disabled = 0;
++	sweet_early_string("\n=== PANIC FREEZE (P0092) ===\n");
++	for (unsigned int i = 0; i < 4; i++) {
++		va_list copy;
++
++		sweet_early_string("[P0092-PANIC] ");
++		va_copy(copy, *args);
++		_doprnt(fmt, &copy, sweet_early_putc, 16);
++		va_end(copy);
++		sweet_early_string(" caller 0x");
++		for (int nib = 15; nib >= 0; nib--) {
++			sweet_early_putc(p92dig[(caller >> (nib * 4)) & 0xf]);
++		}
++		sweet_early_putc('\n');
++	}
++	sweet_early_string("P0092: panic freeze held (no auto reboot)\n");
++	__asm__ volatile("dsb sy" ::: "memory");
++	for (;;) {
++		__asm__ volatile("msr daifset, #0xf" ::: "memory");
++		__asm__ volatile("wfi");
++	}
++}
++
+ void
+ sweet_early_relocate(uint64_t base)
+ {
+diff --git a/osfmk/arm64/sweet_early.h b/osfmk/arm64/sweet_early.h
+index b152cba..fef1b1e 100644
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -11,6 +11,7 @@ void sweet_early_mark(unsigned int stage, const char *label);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+ void sweet_early_panic_flush(const char *fmt, va_list *args, unsigned long caller);
++void sweet_early_panic_freeze(const char *fmt, va_list *args, unsigned long caller);
+ void sweet_early_relocate(uint64_t base);
+ void sweet_early_disable(void);
+ #else
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+index 2b225a2..73ef9bd 100644
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1072,6 +1072,15 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ {
+ #pragma clang diagnostic pop
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * 0092: with boot-arg sweetpanicfreeze=1 hold the panic story on
++	 * the screen and never reach the reboot tail; a silent flashback
++	 * reboot cannot wipe it.  Without the boot-arg this returns at once.
++	 */
++	sweet_early_panic_freeze(panic_format_str, panic_args, panic_caller);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ #if defined(SWEET)
+ 	/*
+ 	 * 0089: the original sweet_early_panic() copy bails once the early
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+index bec97fb..bfc7b2d 100644
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -742,6 +742,9 @@ kernel_bootstrap_thread(void)
+ 
+ 	/* Load the static and engineering trust caches */
+ 	load_static_trust_cache();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: static trust cache done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ #endif
+ 
+ 	kernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN);
+@@ -753,11 +756,23 @@ kernel_bootstrap_thread(void)
+ 	 * the static KVA mappings used for the jettisoned bootstrap segments.
+ 	 */
+ 	kernel_bootstrap_log("OSKextRemoveKextBootstrap");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: OSKextRemoveKextBootstrap enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	OSKextRemoveKextBootstrap();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: OSKextRemoveKextBootstrap done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ 	/* No changes to kernel text and rodata beyond this point. */
+ 	kernel_bootstrap_log("machine_lockdown");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: machine_lockdown enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	machine_lockdown();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: machine_lockdown done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ #ifdef CONFIG_XNUPOST
+ 	kern_return_t result = kernel_list_tests();
+@@ -766,11 +781,20 @@ kernel_bootstrap_thread(void)
+ 		panic("kernel_do_post: Tests failed with result = 0x%08x", result);
+ 	}
+ 	kernel_bootstrap_log("kernel_do_post - done");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: kernel_do_post done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ #endif /* CONFIG_XNUPOST */
+ 
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_lockdown_iokit");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: PE_lockdown_iokit enter\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	PE_lockdown_iokit();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: PE_lockdown_iokit done\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ #endif
+ 	/*
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
+@@ -787,7 +811,14 @@ kernel_bootstrap_thread(void)
+ 	 *	Start the user bootstrap.
+ 	 */
+ #ifdef  MACH_BSD
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0092: startup: calling bsd_init\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	bsd_init();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* P0092: bsd_init returning means the mount/root dance unwound. */
++	printf("P0092: startup: bsd_init returned\n");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ #endif
+ 
+ 
