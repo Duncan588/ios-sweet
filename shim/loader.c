@@ -74,6 +74,42 @@ static int magic_ok(const char *m)
 	return 1;
 }
 
+/* word-of-4-bytes in DISPLAY order (byte0 first), so hex lines read like a
+ * byte dump instead of endian-swapped words. */
+static uint32_t pb(const volatile char *p, int i)
+{
+	return (uint32_t)(uint8_t)p[i] << 24 | (uint32_t)(uint8_t)p[i + 1] << 16 |
+	       (uint32_t)(uint8_t)p[i + 2] << 8 | (uint32_t)(uint8_t)p[i + 3];
+}
+
+static void tag16(const char *base)
+{
+	static char t[5];
+	const volatile char *p = (const volatile char *)base;
+	if (p[0] == 'S' && p[1] == 'W') { t[0]='M'; t[1]='A'; t[2]='G'; }
+	else if (p[0] == 0x07 && p[1] == 0x07) { t[0]='C'; t[1]='P'; t[2]='I'; t[3]='O'; }
+	else if (p[0] == 0x1f && p[1] == 0x8b) { t[0]='G'; t[1]='Z'; t[2]='I'; t[3]='P'; }
+	else if (!p[0] && !p[1]) { t[0]='0'; t[1]='0'; t[2]='s'; }
+	else { t[0]='?'; t[1]='?'; t[2]='?'; }
+	t[3] = ' '; t[4] = 0; con_str("", t);
+}
+
+static void dump_points(uint64_t rd_start, uint64_t rd_end)
+{
+	static const uint64_t off[] = {0, 0x1000, 0x100000, 0x1330000, 0x1336100,
+		0x133A000, 0x1400000, 0 /*end-0x400 filled below*/};
+	con_str("DUMP", "initrd hex (byte order, 16B per row):");
+	volatile char *base = (volatile char *)rd_start;
+	uint64_t n = rd_end - rd_start;
+	for (int i = 0; i < 8; i++) {
+		uint64_t o = off[i] ? off[i] : n - 0x400;
+		if (o + 16 > n) o = n - 16;
+		con_hex2("", "+0x", (uint32_t)o, "w0=", pb(base + o, 0));
+		con_hex2("", "   w1=", pb(base + o, 4), "w2=", pb(base + o, 8));
+		tag16(base + o);
+	}
+}
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 const char *loader_boot(uintptr_t dtb)
@@ -90,13 +126,17 @@ const char *loader_boot(uintptr_t dtb)
 	 * "SWEETXNU". ~17 MiB at 4-byte stride is a few ms with the MMU off. */
 	const struct payload *p = 0;
 	uint64_t scanned;
-	for (scanned = 0; scanned + 8 <= rd_end - rd_start; scanned += 4)
+	/* byte stride: a payload appended after the vendor cpio may sit at any
+	 * alignment (pad/gravity unknown), so do not assume multiples of 4. */
+	for (scanned = 0; scanned + 8 <= rd_end - rd_start; scanned++)
 		if (magic_ok((const char *)(rd_start + scanned))) {
 			p = (const struct payload *)(rd_start + scanned);
 			break;
 		}
-	if (!p)
+	if (!p) {
+		dump_points(rd_start, rd_end);
 		return "no SWEETXNU payload (scanned all of initrd)";
+	}
 	con_hex2("INITRD", "payload found at +0x", (uint32_t)scanned, "size 0x", (uint32_t)(rd_end - rd_start));
 	if (p->version != 1 || (p->adt_off & 7) || ((rd_start + scanned) & 7))
 		return "bad payload header";

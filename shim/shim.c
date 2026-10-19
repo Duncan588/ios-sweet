@@ -401,10 +401,10 @@ void shim_main(uint64_t dtb)
 	stage = "ufs";
 	test_ufs();
 	con_skip();
-	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
-	con_str("UFS", "probe done, reset in ~3 min");
-	delay_ms(180000);
-	reset(20);
+	/* Diagnostics policy (2026-10-19): HOLD, never auto-reset — the screen
+	 * is the only log channel on venus, so let it stay for photos/video.
+	 * The 3-min countdown + reset is intentionally left out. */
+	con_str("UFS", "probe done (HOLDING screen, no auto reset)");
 
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);
