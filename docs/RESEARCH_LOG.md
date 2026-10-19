@@ -240,5 +240,5 @@ amdisk overlaps kernel memory。
   - cpu.c（arm64）：cpu_start 自启动分支：cpu_machine_init 前/后、configure_coresight 前/后。
   - 锁/自旋（任务 5/6 规格语义）：窗口内确认无跨机器锁与 while 自旋（processor_updown_lock 本地、master 分支无 pset_lock/wait_for_start），以死点包夹+两循环周期 beat 等价落地。
 - **本地验证（如实降级）**：git apply --check 于 run-392374 xnu-buildtree 真树（shim/out/bt/buildtree.tgz 快照，post-0082；staging=五个目标文件逐一复制后 apply）；未跑 xnu-cc（Windows 无 Apple-fork clang，~/swift/usr/bin/clang 不存在），格式说明符人工核对；编译门槛交给 CI。
-- **产物**：CI run 待回填 → xnu/out-0084/kernel.development.sweet，sha256 待回填。重建/发射命令在 NOTES 19k（官方 17 参数 cmdline）。
+- **产物**：CI run **39241563356**（venus-probe 初始 0084 提交 adf66f5，success 8m34s）→ xnu/out-0084/kernel.development.sweet，sha256 `cbb844f9ae33232c5d3d56d33c7c9589a226822c50100e55f9a2e814b120913f`；verbose 日志已存 shim/out/run392415.log。重建/发射命令在 NOTES 19k（官方 17 参数 cmdline）。
 - **下一 boot 判读（P0084: 前缀，最后可见行定位）**：initCPU 的 CPU_BOOTED 返回行消失=ml_broadcast_cpu_event/kdebug 死点；ICC_SGI1R 行消失=signalCPU 死点；startAll before-processor_start 后十连拍（processor.c 4 拍 + cpu_start 4 拍 + cpu_machine_init 4 拍 + PE_cpu_machine_init 2 拍 + initCPU 尾 1 拍）缺哪行即 wedge 语句；若 thread_block 行消失则 scheduler/context-switch 路径优先（此前从未怀疑）。

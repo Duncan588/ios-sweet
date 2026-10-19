@@ -11,7 +11,7 @@
   5. osfmk/arm64/cpu.c cpu_start 自启动分支：cpu_machine_init 前/后、configure_coresight_registers 前/后。
   6. 锁/自旋（task 第 5/6 点）：本窗口内无跨机器锁、无 while 自旋（master 分支不碰 pset_lock/processor_wait_for_start；processor_updown_lock 是本地 lck_mtx 且无对手），等价落地为「每个死点包夹 + 两个 IOSleep 循环周期 beat」。
 - **本地验证（如实降级）**：`git apply --check` 通过于 run 392374 xnu-buildtree 真树（shim/out/bt/buildtree.tgz 解包，post-0082），即 CI patch 循环 0083-skip 后的现实基线；增量只有 kprintf/无副作用门控，格式说明符逐条人工核对（%p/%d/%u ↔ cpu_id_t/cpu/UInt32）。Windows 本机无 Apple-fork clang（xnu-cc.py 依赖 ~/swift/usr/bin/clang），故未跑 xnu-cc 语法级验证，最终编译以 CI 为准（偏差已记录）。若日后修好 0083，0084 的 SweetCPU.cpp/IOCPU.cpp hunks 需重新对位（0083 改了同函数附近文本）。
-- 主会话重建命令（官方 17 参数 cmdline，老 ADT，不加 sweetcpudbg）见 RESEARCH_LOG 第十六次/下方产物行；kernel 产物 `xnu/out-0084/kernel.development.sweet`，sha256 待 CI 后回填。
+- 主会话重建命令（官方 17 参数 cmdline，老 ADT，不加 sweetcpudbg）见 RESEARCH_LOG 第十六次/下方产物行；kernel 产物 `xnu/out-0084/kernel.development.sweet` sha256 **`cbb844f9ae33232c5d3d56d33c7c9589a226822c50100e55f9a2e814b120913f`**（CI run **39241563356**，8m34s success；run verbose 日志确认 0084 patch apply 成功、被 skip 的仅 0083 与官方基线四项）。
 
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
