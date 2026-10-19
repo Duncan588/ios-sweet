@@ -53,11 +53,11 @@
 #define VENUS_FB_W_QHD		1440
 #define VENUS_FB_H_QHD		3200
 #ifdef VENUS_PANEL_QHD
-#define VENUS_FB_W		VENUS_FB_W_QHD	/* 1440 */
-#define VENUS_FB_H		VENUS_FB_H_QHD	/* 3200 */
+#define VENUS_FB_W		1440	/* == VENUS_FB_W_QHD (literal: host fb parsers regex-match digits) */
+#define VENUS_FB_H		3200	/* == VENUS_FB_H_QHD */
 #else
-#define VENUS_FB_W		VENUS_FB_W_FHD	/* 1080 */
-#define VENUS_FB_H		VENUS_FB_H_FHD	/* 2400 */
+#define VENUS_FB_W		1080	/* == VENUS_FB_W_FHD */
+#define VENUS_FB_H		2400	/* == VENUS_FB_H_FHD */
 #endif
 #define VENUS_FB_STRIDE		(VENUS_FB_W * 4) /* a8r8g8b8 assumption; bpp   */
 				/* NOT in DT — panel bpp=24 dsi; DPU fb format  */
