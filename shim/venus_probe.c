@@ -8,6 +8,7 @@
  */
 #include <stdint.h>
 #include "console.h"
+#include "fdt.h"
 #include "soc_venus.h"
 #include "venus_probe.h"
 
@@ -21,6 +22,35 @@ static uint64_t venus_smc(uint64_t fn)
 	register uint64_t x0 asm("x0") = fn;
 	__asm__ volatile("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
 	return x0;
+}
+
+static uint64_t venus_hvc(uint64_t fn)
+{
+	register uint64_t x0 asm("x0") = fn;
+	__asm__ volatile("hvc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
+	return x0;
+}
+
+/* Pick the PSCI conduit from the DTB /psci "method" property: QEMU virt has
+ * no EL3 (TCG), where smc raises Undefined Instruction; real ABL/ATF venus
+ * DTBs carry /psci too, so this is evidence-driven, not QEMU-only. */
+static int str_eq(const char *a, const char *b)
+{
+	while (*a && *a == *b)
+		a++, b++;
+	return *a == *b;
+}
+
+static uint64_t psci_call(uintptr_t dtb, uint64_t fn)
+{
+	char method[8];
+
+	if (fdt_get_string(dtb, "/psci", "method", method, sizeof(method)) &&
+	    str_eq(method, "hvc"))
+		return venus_hvc(fn);
+	if (!method[0])
+		con_str("PSCI warn", "no /psci method in DTB, assuming smc");
+	return venus_smc(fn);
 }
 
 static void venus_spin(void)
@@ -44,7 +74,12 @@ int venus_probe_entry(uintptr_t dtb)
 	else
 		con_str("INITRD", "absent in /chosen (vendor_boot ramdisk not wired)");
 	con_hex("CNTFRQ_EL0", rsr("cntfrq_el0"));
-	con_hex("PSCI ver", venus_smc(PSCI_VERSION));
+	{
+		char method[8];
+		fdt_get_string(dtb, "/psci", "method", method, sizeof(method));
+		con_str("PSCI method", method[0] ? method : "absent in DTB (assuming smc)");
+		con_hex("PSCI ver", psci_call(dtb, PSCI_VERSION));
+	}
 	con_skip();
 	con_str("VENUS", "probe done, no reset call (held on screen)");
 	venus_spin();
