@@ -1,0 +1,570 @@
+# P0095: unattended venus observation round 3 - early USB live log +
+# hardware watchdog backstop.
+#
+# Design doc: docs/P0095_UNATTENDED_DESIGN.md (Q1-Q6 conclusions, risk
+# table R1-R8, SOP). Rebased onto CI run 39328388718 (20c4cae, carries
+# P0093+P0094), baseline tree ~/research/bt93 on the notebook.
+#
+# Phase A (boot-arg sweetusb=2, default off): bring the gadget + a
+# raw-frame UDP console-ring pump up in kernel_bootstrap, BEFORE
+# bsd_init - the observed venus death wall (mac_policy_initbsd+) sits
+# before the existing mountroot probe, so rounds boot#22-25 died with
+# zero bytes captured. DLIL/ifnet/sockets do not exist there, so the
+# pump builds Ethernet/IPv4/UDP frames by hand and hands them straight
+# to the EP_TX bulk endpoint; constants are the file's own (host MAC
+# 02:00:5e:77:ee:01, phone ..:02, 192.168.7.1/2, UDP/5140 - mirrors
+# tools/sweet-usbnet.sh). GCC clocks are echoed read-only only; venus's
+# 0x088e2000 is the EUD manager and is never written. Everything fails
+# soft - loss of the log never blocks bsd_init.
+#
+# Hardware WDT (default on, boot-arg sweetwdt=0 to disable): msm-watchdog
+# map at 0x17c10000 per design Q3 ([VERIFIED], re-checked against
+# MiCode/Xiaomi_Kernel_OpenSource venus-r-oss qcom_soc_wdt.c: RST 0x04,
+# EN 0x08, STS 0x0c, BARK 0x10, BITE 0x14, HZ 32765). BARK is programmed
+# past BITE (XNU has no handler for the bark SPI0), BITE = 60 s; the
+# watchdog is fed from (1) sweet_early_mark, (2) the bsd_init P0092
+# mark sites, (3) a dedicated 15 s feed thread, (4) the sweet USB event
+# + pump threads and (5) throttled from the console-ring append. A wedge
+# stops being fed and the SoC bite-resets into recovery; the breed is
+# readable from bootinfo.pureason bit0. The shim (vp4 line) arms it
+# before the kernel jump and echoes the pre-arm EN/STS/BARK/BITE.
+#
+# All new code is #if defined(ARM64_BOARD_CONFIG_SWEET) gated.
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,8 @@ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
++bsd/dev/sweet_usb_early.c		standard						# P0095: gadget + raw-frame UDP log pump before bsd_init
++bsd/dev/sweet_wdt.c			standard						# P0095: venus hardware watchdog feeder (0x17c10000)
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -789,6 +789,27 @@ sweet_log_append(const char *c, int size)
+ 		return;
+ 	}
+ 	uint64_t at = os_atomic_add_orig(&sweet_log_total, (uint64_t)size, relaxed);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * P0095: "console is alive" WDT feed. A wedge stops printing and
++	 * stops feeding, so the hardware bite lands. Petting is throttled
++	 * by ring progress (about 1 MiB of new output - order of 10 s at
++	 * live-console rates), never by wall clocks: this may run before
++	 * timers exist and from panic contexts, and must not block.
++	 */
++	{
++		static _Atomic uint64_t sweet_log_fed;
++
++		if (at - os_atomic_load(&sweet_log_fed, relaxed) >= (1u << 20)) {
++			os_atomic_store(&sweet_log_fed, at, relaxed);
++			{
++				extern void sweet_wdt_pet(void);	/* bsd/dev/sweet_wdt.c */
++
++				sweet_wdt_pet();
++			}
++		}
++	}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	for (int i = 0; i < size; i++) {
+ 		sweet_log_ring[(at + (uint64_t)i) % SWEET_LOG_SIZE] = c[i];
+ 	}
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -41,6 +41,11 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++/* P0095: Phase A (bsd/dev/sweet_usb_early.c) entry, raw pump and WDT feed. */
++extern void sweet_wdt_pet(void);
++
++static int ud_early;            /* P0095 Phase A: bring-up before bsd_init */
++static int ud_early_up;         /* P0095 Phase A completed (pump running) */
+ 
+ #define GCC_PA                  0x00100000
+ #define GCC_SIZE                0x00090000
+@@ -85,6 +90,14 @@ sweet_usb_probe(void)
+ 	if (!enabled) {
+ 		return;
+ 	}
++	if (ud_early_up) {
++		/* P0095: Phase A already ran the same bring-up in
++		 * kernel_bootstrap; repeating it at mountroot would soft-reset
++		 * the live controller and drop the host link. Phase B ue0 work
++		 * would start here on a fallback boot (Phase A failed). */
++		printf("P0095: early USB already up; skipping mountroot probe\n");
++		return;
++	}
+ 	vm_offset_t gcc = ml_io_map(GCC_PA, GCC_SIZE);
+ 	if (gcc == 0) {
+ 		printf("SWEET USB: GCC map failed\n");
+@@ -224,6 +237,7 @@ static struct {
+ 	uint64_t    dma_pa;
+ 	uint32_t    evt_pos;
+ 	int         sleep_chan;
++	int         pump_chan;  /* P0095 raw-frame pump sleep channel */
+ 	enum { EP0_SETUP, EP0_DATA, EP0_WAIT_STATUS2, EP0_WAIT_STATUS3, EP0_STATUS } state;
+ 	bool        data_in;        /* data stage direction */
+ 	uint32_t    events;
+@@ -734,6 +748,11 @@ ud_event(uint32_t ev)
+ 		return;
+ 	}
+ 	if (ep == EP_TX && type == 1) {
++		if (!ud.lock) {
++			/* P0095 Phase A: no ue0, the raw pump owns TX alone. */
++			ud.tx_busy = false;
++			return;
++		}
+ 		lck_mtx_lock(ud.lock);
+ 		ud.tx_busy = false;
+ 		ud_tx_kick_locked();
+@@ -796,6 +815,9 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ 		if ((++ticks % 30000) == 0) {
+ 			printf("SWEET USB: ue0 rx %llu tx %llu frames\n", ud.rx_frames, ud.tx_frames);
+ 		}
++		if ((ticks % 15000) == 0) {
++			sweet_wdt_pet();        /* P0095: 15 s WDT feed */
++		}
+ 		ud_sleep_ms(1);
+ 	}
+ }
+@@ -864,7 +886,14 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 		return;
+ 	}
+ 	ud.dma_pa = ptoa_64(pn);
+-	ud_if_create();
++	if (ud_early) {
++		/* P0095 Phase A: ifnet/DLIL/socket KPIs are not up yet, so
++		 * no ue0 here; the raw-frame pump ships the console ring and
++		 * the mountroot Phase B keeps ue0 for the full flow. */
++		printf("P0095: early mode - ue0/socket skipped, raw pump only\n");
++	} else {
++		ud_if_create();
++	}
+ 
+ 	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
+ 	dwc_wr(DCTL, DCTL_CSFTRST);
+@@ -924,8 +953,170 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	}
+ 	int livelog = 1;
+ 	PE_parse_boot_argn("sweetusblog", &livelog, sizeof(livelog));
+-	if (livelog && ud.ifp != NULL && kernel_thread_start(ud_log_thread, NULL, &thread) == KERN_SUCCESS) {
++	if (!ud_early && livelog && ud.ifp != NULL && kernel_thread_start(ud_log_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
++/*
++ * P0095 Phase A: raw-frame UDP pump. The console ring (bsd/dev/sweet_ufs.c
++ * hook in _cnputs) is drained to the listener described by
++ * tools/sweet-usbnet.sh with self-built Ethernet/IPv4/UDP headers - no
++ * ifnet, no DLIL, no sockets, since none of that exists before bsd_init.
++ * Header constants are the file's own truth values:
++ *   host MAC = the ECM iMACAddress (:354 "02005E77EE01"),
++ *   phone MAC = ud_phone_mac (:356),
++ *   phone 192.168.7.2 (:691), host 192.168.7.1 (:826), UDP/5140 (:825).
++ * Framing follows the existing ECM bulk-IN TX conventions (:536-559:
++ * a frame of a multiple of 512 bytes gets one pad byte). The pump itself
++ * never prints - whatever it says would fill the ring it drains.
++ */
++#define SWEET_UDP_LOG_PORT      5140
++#define SWEET_UDP_LOG_CHUNK     1200
++
++static const uint8_t ud_host_mac[ETHER_ADDR_LEN] = { 0x02, 0x00, 0x5e, 0x77, 0xee, 0x01 };
++
++static uint16_t
++ud_pump_checksum16(const uint8_t *p, uint32_t len)
++{
++	uint32_t sum = 0;
++
++	for (uint32_t i = 0; i < len; i += 2) {
++		sum += ((uint32_t)p[i] << 8) | ((i + 1 < len) ? p[i + 1] : 0);
++	}
++	while (sum > 0xffff) {
++		sum = (sum & 0xffff) + (sum >> 16);
++	}
++	return (uint16_t)(~sum);
++}
++
++static void
++ud_pump_send(const uint8_t *payload, uint32_t len, uint32_t frag_id)
++{
++	uint8_t *f = (uint8_t *)(ud.dma + UD_TX);
++	uint32_t flen = 14u + 20u + 8u + len;
++	uint16_t sum;
++	uint32_t ulen = 8u + len;
++
++	memcpy(f, ud_host_mac, ETHER_ADDR_LEN);
++	memcpy(f + ETHER_ADDR_LEN, ud_phone_mac, ETHER_ADDR_LEN);
++	f[12] = 0x08;                   /* EtherType IPv4 */
++	f[13] = 0x00;
++	f[14] = 0x45;                   /* v4, IHL 20 */
++	f[15] = 0;
++	f[16] = (uint8_t)(flen >> 8);
++	f[17] = (uint8_t)flen;
++	f[18] = (uint8_t)(frag_id >> 8);
++	f[19] = (uint8_t)frag_id;
++	f[20] = 0x40;                   /* DF, no fragments */
++	f[21] = 0;
++	f[22] = 64;
++	f[23] = 17;                     /* proto UDP */
++	f[24] = 0;
++	f[25] = 0;                      /* checksum appended below */
++	f[26] = 0xc0; f[27] = 0xa8; f[28] = 0x07; f[29] = 0x02;  /* self */
++	f[30] = 0xc0; f[31] = 0xa8; f[32] = 0x07; f[33] = 0x01;  /* host */
++	sum = ud_pump_checksum16(f + 14, 20);
++	f[24] = (uint8_t)(sum >> 8);
++	f[25] = (uint8_t)sum;
++	f[34] = (uint8_t)(SWEET_UDP_LOG_PORT >> 8);
++	f[35] = (uint8_t)SWEET_UDP_LOG_PORT;
++	f[36] = (uint8_t)(SWEET_UDP_LOG_PORT >> 8);
++	f[37] = (uint8_t)SWEET_UDP_LOG_PORT;
++	f[38] = (uint8_t)(ulen >> 8);
++	f[39] = (uint8_t)ulen;
++	f[40] = 0;
++	f[41] = 0;                      /* UDP checksum 0: allowed over v4 */
++	memcpy(f + 42, payload, len);
++	/* 512-multiple frame closes with one pad byte (:551-553). */
++	if ((flen % 512) == 0) {
++		f[flen++] = 0;
++	}
++	ud.tx_busy = true;
++	ud.tx_frames++;
++	ud_start_trb(EP_TX, UD_TRB_TX, UD_TX, (uint32_t)flen, TRBCTL_NORMAL);
++}
++
++/* Same pattern as ud_sleep_ms, own wait channel (pumps + event thread
++ * sleep independently). Design R1/R2 accepted: clock_init already ran. */
++static void
++ud_pump_sleep_ms(unsigned ms)
++{
++	uint64_t deadline;
++
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void) assert_wait_deadline(&ud.pump_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static void
++ud_pump_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	static uint8_t chunk[SWEET_UDP_LOG_CHUNK];
++	uint64_t pos = sweet_log_position();
++	uint32_t pump_ticks = 0;
++
++	/* Start 64 KiB back so the pre-wall boot lines are included. */
++	pos = pos > 65536 ? pos - 65536 : 0;
++	for (;;) {
++		uint32_t n;
++
++		/* While the TRB is pending (tx_busy) the ring holds the data;
++		 * only drain when the endpoint is free. */
++		while (ud.configured && !ud.tx_busy &&
++		    (n = sweet_log_copy(&pos, chunk, sizeof(chunk))) > 0) {
++			ud_pump_send(chunk, n, (uint32_t)pos);
++		}
++		if ((++pump_ticks % 150) == 0) {
++			sweet_wdt_pet();        /* P0095: 15 s WDT feed */
++		}
++		ud_pump_sleep_ms(100);
++	}
++}
++
++/*
++ * P0095 Phase A entry (from bsd/dev/sweet_usb_early.c, before bsd_init):
++ * echo power/clock state read-only (venus clocks stay as ABL configured
++ * them; 0x088e2000 is the EUD manager on venus and is never touched), run
++ * the same controller bring-up as the mountroot path, start the pump.
++ * Everything here fails soft: failure means "no early log", never death.
++ */
++void
++sweet_usb_gadget_early(void)
++{
++	vm_offset_t gcc, dwc;
++	uint32_t gdscr, master, cfgnoc;
++	thread_t thread;
++
++	if (ud_early_up || ud_early) {
++		return;
++	}
++	gcc = ml_io_map(GCC_PA, GCC_SIZE);
++	if (gcc == 0) {
++		printf("P0095: early GCC map failed\n");
++		return;
++	}
++	gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
++	master = usb_rd(gcc, usb_cbcr[0].off);
++	cfgnoc = usb_rd(gcc, usb_cbcr[3].off);
++	printf("P0095: early usb GDSCR 0x%08x master 0x%08x cfg-noc 0x%08x (echo only)\n",
++	    gdscr, master, cfgnoc);
++	if (!(gdscr & (1u << 31)) || (master & CBCR_CLK_OFF) || (cfgnoc & CBCR_CLK_OFF)) {
++		printf("P0095: early: controller unpowered/unclocked; no early log\n");
++		return;
++	}
++	dwc = ml_io_map(DWC3_PA, DWC3_SIZE);
++	if (dwc == 0) {
++		printf("P0095: early DWC3 map failed\n");
++		return;
++	}
++
++	ud_early = 1;
++	sweet_usb_gadget_start(dwc);
++	if (kernel_thread_start(ud_pump_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
++		ud_early_up = 1;
++		printf("P0095: early usb up, raw-frame pump running\n");
+ 	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_usb_early.c
+@@ -0,0 +1,45 @@
++/*
++ * P0095 Phase A: bring the SWEET-USB gadget + raw-frame UDP log pump up
++ * before bsd_init() (osfmk/kern/startup.c hook, kernel_bootstrap).
++ *
++ * Design doc: docs/P0095_UNATTENDED_DESIGN.md, Q1/Q2.
++ *
++ * The venus death wall sits after mac_policy_initbsd() and long before
++ * the existing mountroot probe (sweet_ufs_init -> sweet_usb_probe), so
++ * every previous observation round (boot#22-25) died with the sweetusb
++ * driver never having run and zero bytes captured. This hook runs the
++ * gadget bring-up in bsd/dev/sweet_usb.c minus the ue0/DLIL/socket parts
++ * (those kernel interfaces do not exist before bsd_init) and starts the
++ * raw-frame UDP pump that ships the console ring - including everything
++ * logged before the wall - to the listener described by
++ * tools/sweet-usbnet.sh. The mountroot path keeps its full ue0 flow
++ * (Phase B, unchanged for sweet) and is skipped here only when Phase A
++ * already brought the same controller up.
++ *
++ * Gating per design/boot default: Phase A runs only when the boot-arg
++ * sweetusb=2 is given; without it the boot behaves exactly like P0094
++ * and earlier (the comparison round captures nothing). Compile-time the
++ * file is armed by ARM64_BOARD_CONFIG_SWEET like the rest of the series.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <kern/misc_protos.h>
++#include <pexpert/pexpert.h>
++
++extern void sweet_usb_gadget_early(void);       /* bsd/dev/sweet_usb.c */
++
++void
++sweet_usb_early_start(void)
++{
++	int enabled = 0;
++
++	(void) PE_parse_boot_argn("sweetusb", &enabled, sizeof(enabled));
++	if (enabled != 2) {
++		/* Default: Phase A stays off, boot identical to previous
++		 * kernels unless the launcher asks for the early gadget. */
++		return;
++	}
++	printf("P0095: early usb start (sweetusb=2) in kernel_bootstrap, "
++	    "before bsd_init\n");
++	sweet_usb_gadget_early();
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_wdt.c
+@@ -0,0 +1,135 @@
++/*
++ * P0095: venus hardware watchdog backstop (0x17c10000, msm-watchdog map).
++ *
++ * Design doc: docs/P0095_UNATTENDED_DESIGN.md, Q3/Q4 (all values re-checked
++ * against the [VERIFIED] table before being written here).
++ *
++ * The Xiaomi Mi 11 (venus) DTB maps qcom,wdt@17c10000, compatible
++ * "qcom,msm-watchdog", reg 0x17c10000/0x1000, WDT_HZ 32765. Register map
++ * re-verified against MiCode/Xiaomi_Kernel_OpenSource branch venus-r-oss,
++ * drivers/soc/qcom/qcom_soc_wdt.c:
++ *   WDT0_RST 0x04 / WDT0_EN 0x08 / WDT0_STS 0x0c / WDT0_BARK_TIME 0x10 /
++ *   WDT0_BITE_TIME 0x14; pet = write 1 to RST, enable = write BIT(0) to EN.
++ * (The kpss-wdt map - RST 0x38/EN 0x40 - is a different compatible and was
++ * already ruled out in the design doc; do not "simplify" this back.)
++ *
++ * The stock kernel arms bark at 20 s with a bite ~10 s later, but XNU has
++ * no handler for the bark SPI0, so BARK is programmed far beyond BITE and
++ * the only watchdog exit is the hardware bite: any wedge stops being fed
++ * and the SoC resets to recovery within 60 s, giving an unattended round
++ * its reset even without USB or serial evidence. The bite is distinguish-
++ * able from an orderly reset via bootinfo.pureason bit0 (wdog).
++ *
++ * Feeding is triple-braced (P0095):
++ *   1. every sweet_early_mark() stage (osfmk/arm64/sweet_early.c)
++ *   2. the P0092/P0094 bsd_init mark sites (bsd/kern/bsd_init.c)
++ *   3. this dedicated 15 s feed thread
++ * plus the sweet USB event/log threads. Boot-arg sweetwdt=0 turns the
++ * whole thing off; it is on by default, so the official 17-argument
++ * cmdline needs no change.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/types.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <kern/misc_protos.h>
++#include <pexpert/pexpert.h>
++
++/* osfmk/arm/machine_routines.h, not exported to the BSD layer */
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++
++#define SW_WDT_BASE     0x17C10000ULL
++#define SW_WDT_SIZE     0x1000
++#define SW_WDT_RST      0x04
++#define SW_WDT_EN       0x08
++#define SW_WDT_STS      0x0c
++#define SW_WDT_BARK     0x10
++#define SW_WDT_BITE     0x14
++#define SW_WDT_HZ       32765           /* qcom_soc_wdt.c, venus-r-oss */
++#define SW_WDT_BITE_MS  60000           /* design Q4: 60 s bite */
++#define SW_WDT_FEED_MS  15000           /* design Q4: feed every 15 s */
++
++static volatile uint32_t *sw_wdt;       /* mapped once, stays forever */
++static int sw_wdt_chan;                 /* feed thread sleep channel  */
++
++/* Any context, no locks: one 32-bit store matches the stock pet. */
++void
++sweet_wdt_pet(void)
++{
++	if (!sw_wdt) {
++		return;
++	}
++	sw_wdt[SW_WDT_RST / 4] = 1;
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++/*
++ * Reprogram the watchdog with bark>>bite parameters (shim already armed
++ * it 60 s before the jump, so a no-op padding is safe). Sequence per
++ * design Q4 / qcom_soc_wdt.c: EN=0 - RST=1 - BARK - BITE - EN=1 - RST=1.
++ */
++static void
++sweet_wdt_reinit(void)
++{
++	uint32_t bite = (uint32_t)((uint64_t)SW_WDT_BITE_MS * SW_WDT_HZ / 1000);
++
++	sw_wdt[SW_WDT_EN / 4] = 0;
++	sw_wdt[SW_WDT_RST / 4] = 1;
++	sw_wdt[SW_WDT_BARK / 4] = 0xFFFFFFFEu;  /* bark never fires first */
++	sw_wdt[SW_WDT_BITE / 4] = bite;
++	sw_wdt[SW_WDT_EN / 4] = 1;              /* BIT(0) enable only */
++	sw_wdt[SW_WDT_RST / 4] = 1;             /* restart the counter */
++	__asm__ volatile("dsb sy" ::: "memory");
++	printf("P0095: wdt armed bite=%ums bark=0x%x en=0x%x sts=0x%x\n",
++	    SW_WDT_BITE_MS, sw_wdt[SW_WDT_BARK / 4], sw_wdt[SW_WDT_EN / 4],
++	    sw_wdt[SW_WDT_STS / 4]);
++}
++
++static void
++sweet_wdt_feed(void *arg __unused, wait_result_t wr __unused)
++{
++	for (;;) {
++		uint64_t deadline;
++
++		clock_interval_to_deadline(SW_WDT_FEED_MS / 1000, NSEC_PER_SEC,
++		    &deadline);
++		(void) assert_wait_deadline(&sw_wdt_chan, THREAD_UNINT, deadline);
++		thread_block(THREAD_CONTINUE_NULL);
++		sweet_wdt_pet();
++	}
++}
++
++/* kernel_bootstrap hook (osfmk/kern/startup.c, right before bsd_init). */
++void
++sweet_wdt_early_init(void)
++{
++	int on = 1;
++	vm_offset_t va;
++	thread_t thread;
++
++	(void) PE_parse_boot_argn("sweetwdt", &on, sizeof(on));
++	if (!on) {
++		printf("P0095: sweetwdt=0, hardware WDT backstop disabled\n");
++		return;
++	}
++	va = ml_io_map((vm_offset_t)SW_WDT_BASE, SW_WDT_SIZE);
++	if (va == 0) {
++		printf("P0095: wdt map failed for 0x%llx\n",
++		    (unsigned long long)SW_WDT_BASE);
++		return;
++	}
++	sw_wdt = (volatile uint32_t *)(uintptr_t)va;
++	printf("P0095: wdt before en=0x%x sts=0x%x bark=0x%x bite=0x%x\n",
++	    sw_wdt[SW_WDT_EN / 4], sw_wdt[SW_WDT_STS / 4],
++	    sw_wdt[SW_WDT_BARK / 4], sw_wdt[SW_WDT_BITE / 4]);
++	sweet_wdt_reinit();
++	if (kernel_thread_start(sweet_wdt_feed, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("P0095: wdt feed thread failed (marks still feed)\n");
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -484,8 +484,10 @@ bsd_init(void)
+ 	struct task_ro_data kerntask_ro_data = { };
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	extern void sweet_imem_mark(unsigned int code); /* 0094 */
++	extern void sweet_wdt_pet(void);                /* 0095 */
+ 	printf("P0092: bsd_init enter\n");
+ 	sweet_imem_mark(0x00009403u);
++	sweet_wdt_pet();
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ #if CONFIG_NETBOOT || CONFIG_IMAGEBOOT
+ 	boolean_t       netboot = FALSE;
+@@ -1098,8 +1100,10 @@ bsd_init(void)
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	extern void sweet_imem_mark(unsigned int code); /* 0094 */
++	extern void sweet_wdt_pet(void);                /* 0095 */
+ 	printf("P0092: bsd_init done\n");
+ 	sweet_imem_mark(0x00009404u);
++	sweet_wdt_pet();
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	bsd_init_kprintf("done\n");
+ }
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -108,6 +108,13 @@ sweet_early_mark(unsigned int stage, const char *label)
+ 	sweet_early_string(": ");
+ 	sweet_early_string(label);
+ 	sweet_early_putc('\n');
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* P0095: every early mark keeps the venus hardware WDT fed. */
++	{
++		extern void sweet_wdt_pet(void);
++		sweet_wdt_pet();
++	}
++#endif
+ }
+ 
+ void
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -828,6 +828,19 @@ kernel_bootstrap_thread(void)
+ #ifdef  MACH_BSD
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	printf("P0092: startup: calling bsd_init\n");
++	{
++		/*
++		 * P0095: arm the venus hardware WDT, then bring the SWEET-USB
++		 * gadget + raw-frame UDP log pump up before bsd_init. The
++		 * observed venus death wall sits in bsd_init's early section,
++		 * before every existing mark could tell what ran last.
++		 */
++		extern void sweet_wdt_early_init(void);
++		extern void sweet_usb_early_start(void);
++
++		sweet_wdt_early_init();
++		sweet_usb_early_start();
++	}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	bsd_init();
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
