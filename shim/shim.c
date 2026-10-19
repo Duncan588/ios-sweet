@@ -349,8 +349,17 @@ static void test_gic(void)
 	wr32(r + GICR_IGROUPR0, 0xffffffff);	/* NS view: secure bits are WI */
 	uint32_t en_before = rd32(r + GICR_ISENABLER0);
 	uint32_t pri_before = rd32(r + GICR_IPRIORITYR + 16);	/* INTIDs 16..19 */
+#ifndef VENUS_PROBE
 	for (int id = 0; id < 32; id++)
 		wr8(r + GICR_IPRIORITYR + id, 0xa0);
+#else
+	/* venus (GIC-600?) sync external aborts on GICR_SGI+0x400 priority
+	 * writes (2026-10-19: ESR 0x96000010, ELR 0xA0081FA4 = loop first write,
+	 * FAR=X0=r+0x400; same-page IGROUPR0 write and ISENABLER0/IPRIORITYR
+	 * reads were fine). Skip entirely; if a priority write is ever needed,
+	 * gate it on an extra read-back instead. Diagnostics are not on the
+	 * loader-failure path anymore, so nothing depends on this. */
+#endif
 	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
 	con_hex2("ENABLE", "was=", en_before, "now=", rd32(r + GICR_ISENABLER0));
 	(void)grp;
@@ -419,6 +428,19 @@ void shim_main(uint64_t dtb)
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
+
+#ifdef VENUS_PROBE
+	/* 2026-10-19: on venus the post-loader diagnostics (test_gic etc.)
+	 * abort (GICR_SGI+0x400 priority write -> external abort -> blue
+	 * exception screen) and repainted the red loader screen after 3-5s,
+	 * destroying the DUMP lines before any photo could be taken. The red
+	 * screen WITH the reason + all DUMP hex lines is the only log channel,
+	 * so on a loader failure just HOLD here and skip all diagnostics;
+	 * GIC/timer/UART tests only matter once a payload actually boots. */
+	con_str("HOLD", "loader failed - screen stays (no diagnostics)");
+	for (;;)
+		__asm__ volatile("wfe");
+#endif
 
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
