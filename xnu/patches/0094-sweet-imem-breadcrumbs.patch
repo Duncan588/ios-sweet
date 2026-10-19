@@ -1,0 +1,241 @@
+# P0094: venus IMEM restart-reason breadcrumbs (XNU writes + top-level crash
+# path instrumentation).
+#
+# The Xiaomi Mi 11 (venus) device tree maps qcom,msm-imem@146bf000 with the
+# restart_reason subnode at offset 0x65c, so breadcrumbs live at
+# 0x146bf65c (code) / 0x146bf660 (sequence) / 0x146bf664 (previous code).
+# The 0x146AA65C base everyone used before is the SM7150 ("sweet") IMEM and
+# caused the historical data aborts on venus - it must never be written
+# again. Android lost every read-back channel (/dev/mem absent, driver
+# unbound), so the venus shim reads and prints the previous boot's triple
+# at the earliest moment of the next boot (shim.c P0094 line).
+#
+# XNU side: sweet_early.c gains a lazy one-page ml_io_map() helper
+# (sweet_imem_init, called from PE_init_platform right where the P0089
+# panic-log mapping happens, so kernel_map is already usable) and
+# sweet_imem_mark(code): an idempotent, lock-free 32-bit write triplet for
+# arbitrary crash contexts. Marks (each a distinct literal):
+#   0x9401 kernel_bootstrap entry
+#   0x9402 static trust cache done
+#   0x9403 bsd_init enter
+#   0x9404 bsd_init done
+#   0x9405 PEHaltRestartInternal entry (type in low 8 bits)
+#   0x9406 halt_all_cpus entry (reboot flag in low 8 bits)
+#   0x9407 panic_trap_to_debugger entry (before any freeze/stall path)
+#   0x9408 sleh_synchronous non-SVC exception entry
+#   0x9409 sleh_serror entry
+# All increments are inside #if defined(ARM64_BOARD_CONFIG_SWEET).
+
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -230,4 +230,67 @@
+ 	early_disabled = 1;
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
++
++/*
++ * 0094: venus IMEM restart-reason breadcrumbs. The Xiaomi Mi 11 device
++ * tree maps qcom,msm-imem@146bf000 and its restart_reason subnode sits
++ * at offset 0x65c, so the words are at 0x146bf65c (code), 0x146bf660
++ * (sequence) and 0x146bf664 (previous code). XNU writes a distinct code
++ * at every boot stage and crash/reboot funnel; the shim prints the
++ * previous boot's triple at the very start of the next boot, which is
++ * the only read-back channel left (Android lost /dev/mem and the
++ * driver never binds). 0x146AA65C is the old SM7150 ("sweet") IMEM and
++ * caused the historical data aborts on venus - never write there.
++ *
++ * Mapping is done by sweet_imem_init() from PE_init_platform (same spot
++ * as the P0089 panic-log mapping, so kernel_map is usable); earlier
++ * calls into sweet_imem_mark() are no-ops until it succeeds.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* osfmk/arm/machine_routines.h, not exported to the BSD layer */
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++#define SWEET_IMEM_PADDR        0x146bf000ULL
++#define SWEET_IMEM_SIZE         0x1000
++#define SWEET_IMEM_MARK_OFF     0x65c
++
++static volatile uint32_t *sweet_imem;           /* VA of 0x146bf65c */
++static uint32_t sweet_imem_prev, sweet_imem_seq;
++
++void
++sweet_imem_init(void)
++{
++	if (sweet_imem) {
++		return;
++	}
++	vm_offset_t va = ml_io_map((vm_offset_t)SWEET_IMEM_PADDR, SWEET_IMEM_SIZE);
++	if (!va) {
++		printf("P0094: IMEM map failed for 0x%llx\n",
++		    (unsigned long long)SWEET_IMEM_PADDR);
++		return;
++	}
++	sweet_imem = (volatile uint32_t *)(uintptr_t)(va + SWEET_IMEM_MARK_OFF);
++	printf("P0094: IMEM mapped va=0x%llx, marks at +0x%x\n",
++	    (unsigned long long)va, SWEET_IMEM_MARK_OFF);
++}
++
++/*
++ * Idempotent, side-effect free, called from arbitrary crash paths (no
++ * allocations or locks). The reader watches the sequence word so a
++ * passed torn write is never trusted.
++ */
++void
++sweet_imem_mark(unsigned int code)
++{
++	if (!sweet_imem) {
++		return;
++	}
++	sweet_imem[2] = sweet_imem_prev;
++	__builtin_arm_dsb(0xf);
++	sweet_imem[0] = code;
++	sweet_imem[1] = ++sweet_imem_seq;       /* commit flag written last */
++	__builtin_arm_dsb(0xf);
++	sweet_imem_prev = code;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ #endif /* SWEET */
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -14,6 +14,8 @@
+ void sweet_early_panic_freeze(const char *fmt, va_list *args, unsigned long caller);
+ void sweet_early_relocate(uint64_t base);
+ void sweet_early_disable(void);
++void sweet_imem_init(void);
++void sweet_imem_mark(unsigned int code);
+ #else
+ static inline void sweet_early_mark(unsigned int stage, const char *label)
+ {
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -419,6 +419,11 @@
+ 	startup_phase = upto;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* 0094: venus IMEM breadcrumb writer (osfmk/arm64/sweet_early.c). */
++extern void sweet_imem_mark(unsigned int code);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ void
+ kernel_bootstrap(void)
+ {
+@@ -428,6 +433,15 @@
+ 
+ 	printf("%s\n", version); /* log kernel version */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * 0094: IMEM breadcrumb - kernel_bootstrap entered (PE_init_platform
++	 * already mapped 0x146bf65c through sweet_imem_init()).
++	 */
++	printf("P0094: kernel_bootstrap mark 0x9401\n");
++	sweet_imem_mark(0x00009401u);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 	scale_setup();
+ 
+ 	kernel_bootstrap_log("vm_mem_bootstrap");
+@@ -744,6 +758,7 @@
+ 	load_static_trust_cache();
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	printf("P0092: startup: static trust cache done\n");
++	sweet_imem_mark(0x00009402u);
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ #endif
+ 
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -483,7 +483,9 @@
+ 	};
+ 	struct task_ro_data kerntask_ro_data = { };
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
++	extern void sweet_imem_mark(unsigned int code); /* 0094 */
+ 	printf("P0092: bsd_init enter\n");
++	sweet_imem_mark(0x00009403u);
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ #if CONFIG_NETBOOT || CONFIG_IMAGEBOOT
+ 	boolean_t       netboot = FALSE;
+@@ -1095,7 +1097,9 @@
+ #endif /* DEVELOPMENT || DEBUG */
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
++	extern void sweet_imem_mark(unsigned int code); /* 0094 */
+ 	printf("P0092: bsd_init done\n");
++	sweet_imem_mark(0x00009404u);
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	bsd_init_kprintf("done\n");
+ }
+--- a/iokit/Kernel/IOPlatformExpert.cpp
++++ b/iokit/Kernel/IOPlatformExpert.cpp
+@@ -988,6 +988,9 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	/* P0092: every reboot/halt funnel passes here - name the request. */
+ 	printf("P0092: PEHaltRestartInternal type=%d details=0x%x\n", type, details);
++	/* 0094: IMEM breadcrumb, type in the low 8 bits. */
++	extern void sweet_imem_mark(unsigned int code); /* 0094 */
++	sweet_imem_mark(0x940500u | (type & 0xff));
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	AbsoluteTime      deadline;
+ 	thread_call_t     shutdown_hang;
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -749,6 +749,9 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	/* P0092: the "MACH Reboot"/"CPU halted" funnel - name it first. */
+ 	printf("P0092: halt_all_cpus(reboot=%d)\n", reboot);
++	/* 0094: IMEM breadcrumb, reboot in the low 8 bits. */
++	extern void sweet_imem_mark(unsigned int code); /* 0094 */
++	sweet_imem_mark(0x940600u | (reboot ? 1u : 0u));
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	if (reboot) {
+ 		printf("MACH Reboot\n");
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -610,6 +610,9 @@
+ 	if (class != 0x15) {
+ 		printf("P0092: sync exception esr=0x%08x far=0x%llx\n",
+ 		    esr, (unsigned long long)far);
++		/* 0094: IMEM breadcrumb, non-SVC synchronous exception. */
++		extern void sweet_imem_mark(unsigned int code); /* 0094 */
++		sweet_imem_mark(0x00009408u);
+ 	}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	arm_saved_state_t    * state   = &context->ss;
+@@ -2035,6 +2038,9 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	printf("P0092: SError esr=0x%08x far=0x%llx\n",
+ 	    esr, (unsigned long long)far);
++	/* 0094: IMEM breadcrumb, SError entry. */
++	extern void sweet_imem_mark(unsigned int code); /* 0094 */
++	sweet_imem_mark(0x00009409u);
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 	task_vtimer_check(current_thread());
+ 
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1073,6 +1073,11 @@
+ #pragma clang diagnostic pop
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0094: IMEM breadcrumb - panic entry, before any freeze/stall path. */
++	sweet_imem_mark(0x00009407u);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	/*
+ 	 * 0092: with boot-arg sweetpanicfreeze=1 hold the panic story on
+ 	 * the screen and never reach the reboot tail; a silent flashback
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -100,6 +100,9 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	printf("P0089: panic log mapped gPanicBase=0x%llx size=0x%x\n",
+ 	    (unsigned long long)gPanicBase, gPanicSize);
++	/* 0094: venus IMEM breadcrumb writer (osfmk/arm64/sweet_early.c). */
++	extern void sweet_imem_init(void); /* 0094 */
++	sweet_imem_init();
+ #endif
+ #else
+ 	DTEntry entry, chosen;
