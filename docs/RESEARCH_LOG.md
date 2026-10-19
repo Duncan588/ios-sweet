@@ -110,3 +110,29 @@ Xiaomi/Qualcomm ABL（解锁 BL，boot v2）
 - 【交付】`tools/venus_boot_probe.sh`（笔记本侧运行；前置检查 adb/fastboot、40s 超时轮询、getvar unlocked/current-slot/max-download-size 各一行、`fastboot boot <img>` 前后时间戳、全输出存 `logs/venus-probe-<ts>.log`、完成后**不自动重启**并打印"观察窗口开始"；脚本内无任何 flash/erase/format）。`tools/venus_recover_note.md` 为 Windows+笔记本双端黑屏恢复速查（等 30s → Power+音量下 10s → fastboot devices 验证；完全无响应则拔线 5s 重插；**绝不使用小米官方工具**）。
 - 【执行要点】连接方式：Windows 侧 `ssh notebook`，adb/fastboot 仅在笔记本；venus 活动槽 _b；`fastboot boot` 临时启动不写分区；BL 已解锁（verifiedbootstate=orange），ADR-0008 已自动授权本实验；root 为 APatch（`su -c`，不认 `-qc`）。镜像路径做参数传入。
 - 【状态】脚本与速查已提交 venus-probe 分支；本地 Windows 无 bash，未执行 `bash -n`，仅目视核对（标注：未执行），首跑须笔记本端验证。恢复动作按速查文档执行并补记回本日志。
+---
+
+## 2026-10-19（第四次）— venus dump 解析（boot v3/v4 / dtbo / RAM carve / FB）[VERIFIED-物证]
+
+- 【输入 [SHA-256 已核]】`E:\Hackios\Xiaomi11\` 下 dump：boot_b=98CB9CCA36AA49C18100A9FEE369E8FC4294CD29EB3E44DE3C93AFEBAA8839B4、vendor_boot_b=F0999813278EC3DB24A7DBA13597E599399B50CB1AA5A36F2B929D63FE8FAE2A、dtbo_b=EEBAFBA086EF48318B7500B95515EDC27CF57E129E8E64E3671C42CE93947018。全只读处理，产物在 Xiaomi11/out 与 Xiaomi11/dtb（不进 git）。
+- 【boot 头 [CONFIRMED]】venus boot_b = **header v3**（非 v4）：kernel 39,623,136B、ramdisk 1,489,270B、cmdline 空、os_version 0x200001a9、无 base/offset/tags 字段（v3 语义）。build.sh `--venus` 默认 VENUS_HV=3 **正确，未改**。kernel 已解出到 Xiaomi11/out/boot_b/kernel。
+- 【vendor_boot 头 [CONFIRMED]】VNDRBOOT **v3**：page_size=4096，kernel 槽（32KB 字段口径）实际是 gzip 流，解压为 20,133,880B 标准 cpio 新奇异值：小米把"kernel"槽用了 vendor RAMDISK，非 GKI 标准布局，已按字节验证（解压流以 070701 开头）。
+- 【vendor cmdline（页0）】`androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.memcg=1 androidboot.usbcontroller=a600000.dwc3 cgroup.memory=nokmem,nosocket console=ttyMSM0,115200n8 loop.max_part=7 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=0 pcie_ports=compat iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1`
+- 【vendor RAMDISK 清单】标准 GKI 通用 ramdisk（227 项）：init、init.recovery.qcom.rc、first_stage_ramdisk/fstab.default、fsck.f2fs/e2fsck/dump.f2fs/linker64 等；**ramdisk 内无任何 dtb/dtbo/\*_init.s**（完整清单 Xiaomi11/out/vendor_ramdisk_list.txt；本 cpio 全文 Xiaomi11/out/vendor_boot_blob0.bin）。
+- 【vendor_boot 内嵌 DTB】dtb 区 17 个 SoC 级基树：qcom,lahaina (v1/v2/v2.1)、lahainap x3、shima、yupik/yupikp(yupik-iot/yupikp-iot) 全家（Xiaomi11/dtb/vboot_dtb_00..16.dtb）。main=dtb_04/05/06=Lahaina。Board 档（mtp/venus 面板）来自 dtbo 覆盖，非 vendor_boot 本体。
+- 【dtbo】dt_table v0，magic **0xD7B7AB1E**（BE），header 0x20、entry 32B x73、全 entry id=0 rev=0，全部为标准 FDT overlay（fragment@N）。entry **46 = "Venus based on ... SM8350"（qcom,board-id=65544）**。逐 entry 解包 Xiaomi11/dtb/dtbo_*.dtb。
+- 【FB base【SOLVED】】Lahaina SoC DTB `/reserved-memory/splash_region` **reg = 0xEA600000 / size 0x2300000**，label "cont_splash_region"（venus entry46 未覆盖 splash 区域）。`VENUS_FB_BASE = 0xEA600000`（原占位 0x9d000000 已弃）；dfps 数据区 0xEC900000/0x100000 紧随其后。
+- 【FB 几何【SOLVED，高置信】】dtbo entry46 真机面板 `xiaomi 38 08 0a cmd mode dsc`（与 adb cmdline `qcom,mdss_dsi_k2_38_08_0a_mp_dsc_cmd` 互证）：FHD **W=0x438(1080) H=0x960(2400)**、QHD **W=0x5A0(1440) H=0xC80(3200)**。默认 FHD -> `VENUS_FB_W=1080 / H=2400 / STRIDE=4320`（bpp DT 未给，a8r8g8b8 假设保留，首绘异常再换）；用户若开 QHD+，FB 应切 1440x3200。
+- 【GIC [CONFIRMED=shim.c 无需改]】`/soc/interrupt-controller@17a00000`：compatible arm,gic-v3，**reg = <0x17A00000 0x10000  0x17A60000 0x100000>**，#redistributor-regions=1，redistributor-stride=**0x20000**。与 shim.c 现值完全一致。
+- 【timer【四 PPI 齐解；shim.c 冲突】】SoC DTB `/timer`（arm,armv8-timer）interrupts（DT 顺序=secure phys、ns phys、virtual、hypervisor）：
+  1. raw 13 -> INTID **29**（secure physical）
+  2. raw 14 -> INTID **30**（non-secure physical，cntp_ctl_el0 非安全物理定时器）
+  3. raw 11 -> INTID **27**（**virtual timer，cntv_ctl_el0 → VENUS_VTIMER_INTID = 27**）
+  4. raw 12 -> INTID **28**（hypervisor）
+  clock-frequency 0x124F800 = **19.2 MHz**。
+  警告：shim.c:36-37 硬编码 VTIMER 19 / PTIMER 18（732G 外部资料口径），lahaina DT 不支持 —— 实机 fastboot boot 时 vtimer=19 收不到 IRQ。本次合规只改 soc_venus.h；shim.c 需 venus 侧把 VTIMER->27、PTIMER(cntp)->30（venus_probe 编译选项可 -D 覆盖），宏表已写入 soc_venus.h。
+- 【ufshc】`/soc/ufshc@1d84000`：reg = <0x1D84000 0x3000  0x1D88000 0x8000  0x1D90000 0x9000>（ufs_mem/ufs_ice/ufs_ice_hwkm），IRQ <0 0x109 4>（SPI 265 -> INTID 297）。与 sweet 同址结论维持。
+- 【reserved-memory 全表 [EXPORTED]】SoC DTB 完整表：hyp 0x80000000/0x600000、xbl_aop 0x80600000/0x260000、cmd-db 0x80860000/0x20000、xbl_uefi_log 0x80880000/0x14000、smem 0x80900000/0x200000、cpucp 0x80B00000/0x100000、cdsp_secure_heap 0x80C00000/0x4600000、pil_camera 0x85200000/0x500000、pil_video 0x85700000/0x500000、pil_cvp 0x85C00000/0x500000、pil_adsp 0x86100000/0x3900000、pil_slpi 0x89A00000/0x2F00000、pil_cdsp 0x8C900000/0x1E00000、ipa_fw 0x8E700000/0x10000、ipa_gsi 0x8E710000/0xA000、gpu 0x8E71A000/0x2000、spss 0x8E800000/0x100000、modem 0x8F000000/0x10000000、removed 0xD8800000、**splash 0xEA600000/0x2300000**、demura x2 (0,0)、dfps 0xEC900000/0x100000。/memory@ 在 SoC 基树为空（bank 表 bootloader 注入），S1 FDT dump 可复核。证据：Xiaomi11/out/vboot_dtb_04/05/06.dts、dtb_nodes.txt、dtbo_entry46_venus.dts。
+- 【HARDWARE_COMPARISON 冲突标注】其中的 GIC/timer（INTID 19/18、splash 0x9c000000/0x1700000）**属 sweet(sm7150)/外部732G 资料**，对 lahaina(venus) 不适用；拷贝常量务必以本条 + soc_venus.h 为准。
+- 【soc_venus.h 新值 [COMMITTED]】VENUS_FB_BASE=0xEA600000（原 0x9d000000 占位）、VENUS_FB_W/H/STRIDE=1080/2400/4320、VENUS_VTIMER_INTID=27（附 30/28/29 表）、GIC 校验注记。build.sh 未改（VENUS_HV=3 即正确默认）。
+- 【遗留】1) 面板 bpp/pixel-format DT 未给出（a8r8g8b8 为假设，实测异常先换 BGRX）。2) QHD 下 FB 需 1440x3200（shim 当前 FHD 优先）。3) boot_b 1,489,270B ramdisk 未解（GKI generic，探针打包用注入 ramdisk，无必要）。4) qemu-venus.py 冒烟走 virt 机（vtimer=27 同值），无需变更。
