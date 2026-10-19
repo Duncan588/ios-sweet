@@ -1,0 +1,182 @@
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -68,6 +68,11 @@
+ 	const ml_topology_cpu_t *cpu = &topology->cpus[logical->unsigned32BitValue()];
+ 	if (*(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id) {
+ 		return false;
+ 	}
++	/* 0083 bring-up diagnostics: the first line after a silent hang in
++	 * the AppleCLCD window must say whether SweetCPU matching itself
++	 * ever started. */
++	kprintf("SWEET CPU: cpu=%u mpidr=0x%x SweetCPU nub matched\n",
++	    cpu->cpu_id, *(const uint32_t *)reg->getBytesNoCopy());
+ 	/* MPIDR Aff1 = core: 0x000-0x500 A55, 0x600/0x700 A76 */
+ 	if (cpu->phys_id > 0x700 || (cpu->phys_id & 0xff) != 0 ||
+ 	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -105,10 +105,20 @@
+ 	PE_parse_boot_argn("cpus", &requested, sizeof(requested));
+ 	IOLog("SWEET CPU: requested=%u selected=%u (limit=%u)\n",
+ 	    requested, topology->num_cpus, SWEET_SMP_MAX_CPUS);
++	/* 0083: kprintf beats IOLog here - IOLog routes through the log
++	 * thread, which IOSleeps on the very timers our wedge suspect is. */
++	kprintf("SWEET CPU: startAll: registered=%u/%u tick=%u sgi=%u\n",
++	    __atomic_load_n(&sweet_cpus_registered, __ATOMIC_ACQUIRE),
++	    topology->num_cpus, sweet_dbg_tick_count, sweet_dbg_sgi_count);
+
+ 	uint64_t deadline;
+ 	nanoseconds_to_deadline(10 * NSEC_PER_SEC, &deadline);
++	uint32_t reg_wait = 0;
+ 	while (__atomic_load_n(&sweet_cpus_registered, __ATOMIC_ACQUIRE) != topology->num_cpus) {
+ 		if (mach_absolute_time() > deadline) {
+ 			for (unsigned int i = 0; i < topology->num_cpus; i++) {
+@@ -119,6 +129,9 @@
+ 			panic("SWEET CPU: CPU registration timeout");
+ 		}
+ 		IOSleep(1);
++		if ((++reg_wait & 511) == 0) {
++			kprintf("SWEET CPU: startAll: registration wait ms=%u\n", reg_wait);
++		}
+ 	}
+ 	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -131,15 +131,17 @@
+ 	for (unsigned int i = 0; i < topology->num_cpus; i++) {
+ 		SweetCPU *cpu = __atomic_load_n(&sweet_cpus[i], __ATOMIC_ACQUIRE);
+ 		kern_return_t kr = processor_start(cpu->machProcessor);
+ 		if (kr != KERN_SUCCESS) {
+ 			panic("SWEET CPU: cpu=%u processor_start failed: %d", i, kr);
+ 		}
++		kprintf("SWEET CPU: cpu=%u processor_start kr=%d, waiting for SGI1\n", i, kr);
+ 		/* processor_start() is asynchronous for secondaries in this XNU. */
+ 		nanoseconds_to_deadline(5 * NSEC_PER_SEC, &deadline);
++		uint32_t alive_wait = 0;
+ 		while (__atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE) == 0 ||
+ 		    !sweet_cpu_signal_is_enabled(i)) {
+ 			if (mach_absolute_time() > deadline) {
+ 				IOLog("SWEET CPU: cpu=%u mpidr=0x%x NOT alive after 5s\n",
+ 				    i, topology->cpus[i].phys_id);
++				kprintf("SWEET CPU: cpu=%u 5s state: initialized=%u sig=%u tick=%u sgi=%u\n",
++				    i, __atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE),
++				    sweet_cpu_signal_is_enabled(i),
++				    sweet_dbg_tick_count, sweet_dbg_sgi_count);
+ 				panic("SWEET CPU: cpu=%u startup timeout (reset/MMU/GIC/SGI)", i);
+ 			}
+ 			IOSleep(1);
++			if ((++alive_wait & 511) == 0) {
++				/* Progress beat: if these continue, the timer works
++				 * and the wedge is the SGI/wait itself; if it freezes
++				 * at the first beat, the wedge is timebase/tick. */
++				kprintf("SWEET CPU: cpu=%u alive-wait ms=%u: initialized=%u sig=%u tick=%u sgi=%u\n",
++				    i, alive_wait,
++				    __atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE),
++				    sweet_cpu_signal_is_enabled(i),
++				    sweet_dbg_tick_count, sweet_dbg_sgi_count);
++			}
+ 		}
+ 		IOLog("SWEET CPU: cpu=%u mpidr=0x%x came alive; SGI1 OK\n",
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -213,8 +215,10 @@
+ 	unsigned int aff0 = mpidr & 0xff;
+ 	if (aff0 >= 16) {
+ 		panic("SWEET CPU: SGI target requires unsupported range selector");
+ 	}
++	/* 0083: log the sender side of the self-SGI (receiver side shows up
++	 * as sgi=N in the startAll wait beats). */
++	kprintf("SWEET CPU: cpu=%u SGI1 target mpidr=0x%llx via ICC_SGI1R\n",
++	    cpu_number(), mpidr);
+ 	uint64_t sgi = (((mpidr >> 32) & 0xff) << 48) |
+ 	    (((mpidr >> 16) & 0xff) << 32) |
+ 	    (((mpidr >> 8) & 0xff) << 16) |
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -20,6 +20,12 @@
+ /* Phone default; QEMU virt wires the architected virtual timer to INTID 27. */
+ SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
++/* 0083 bring-up diagnostics: interrupt delivery counters. Never printed
++ * here - sleh runs with IRQs masked and kprintf takes console locks; the
++ * startAll wait beats (SweetCPU.cpp) print them from thread context. */
++volatile uint32_t sweet_dbg_tick_count;
++volatile uint32_t sweet_dbg_sgi_count;
+ #endif
+
+ static vm_offset_t gicd_base;
+ static vm_offset_t gicr_base;
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1872,6 +1872,14 @@
+ 	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+ 	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
+
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+ 	}
++	/* 0083 bring-up diagnostics: count what the GIC actually delivers.
++	 * SGI INTID 1 = the ICC_SGI1R self-IPI queued by initCPU/signalCPU;
++	 * the vtimer INTID is the one the ADT named. Both are read back by
++	 * the SweetCPU wait beats. */
++	if (intid == SWEET_IPI_SGI) {
++		sweet_dbg_sgi_count++;
++	} else if (intid == sweet_vtimer_intid) {
++		sweet_dbg_tick_count++;
++	}
+ 	if (intid == sweet_vtimer_intid) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -40,6 +40,8 @@
+ void pe_init_fiq(void);
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern uint32_t sweet_vtimer_intid;
++extern volatile uint32_t sweet_dbg_tick_count;
++extern volatile uint32_t sweet_dbg_sgi_count;
+ #endif
+
+ #ifdef PRIVATE
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -193,6 +193,11 @@
+ static IORegistryEntry *        gIOChosenEntry;
+
+ static int                      gIOResourceGenerationCount;
+
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* 0083 bring-up diagnostics: sweetcpudbg=1 stamps every startCandidate. */
++static bool                     gIOSweetCpuDbg;
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+
+ const OSSymbol *                gIOServiceKey;
+ const OSSymbol *                gIOPublishNotification;
+@@ -470,6 +475,12 @@
+ 	PE_parse_boot_argn("dextrelaunch", &gIODextRelaunchMax, sizeof(gIODextRelaunchMax));
+ 	PE_parse_boot_argn("iocthreads", &gMaxConfigThreads, sizeof(gMaxConfigThreads));
+
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* Boot arg sweetcpudbg=1: silent-hang wedge locator in the IOKit
++	 * matching window (AppleCLCD -> SweetCPU when cpus=1). */
++	PE_parse_boot_argn("sweetcpudbg", &gIOSweetCpuDbg, sizeof(gIOSweetCpuDbg));
++#endif
+
+ 	gIOUserClientClassKey = OSSymbol::withCStringNoCopy( kIOUserClientClassKey );
+@@ -4720,6 +4720,15 @@
+ 	if (recordTime) {
+ 		clock_get_uptime(&startTime);
+ 	}
+
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0083: name the service that is about to start, so a silent hang
++	 * between IOLog lines becomes a pinpoint instead of a guess. */
++	if (gIOSweetCpuDbg) {
++		kprintf("SWEET DBG: %s::start(%s)\n",
++		    service->getMetaClass()->getClassName(), getName());
++	}
++#endif
++
+ 	ok = service->start(this);
+
+ 	if (recordTime) {
+ 		clock_get_uptime(&endTime);
