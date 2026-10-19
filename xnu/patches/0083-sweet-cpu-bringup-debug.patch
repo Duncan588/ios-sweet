@@ -1,6 +1,6 @@
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -68,6 +68,11 @@
+@@ -68,7 +68,12 @@
  	const ml_topology_cpu_t *cpu = &topology->cpus[logical->unsigned32BitValue()];
  	if (*(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id) {
  		return false;
@@ -15,7 +15,7 @@
  	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -105,10 +105,20 @@
+@@ -105,9 +105,15 @@
  	PE_parse_boot_argn("cpus", &requested, sizeof(requested));
  	IOLog("SWEET CPU: requested=%u selected=%u (limit=%u)\n",
  	    requested, topology->num_cpus, SWEET_SMP_MAX_CPUS);
@@ -24,14 +24,14 @@
 +	kprintf("SWEET CPU: startAll: registered=%u/%u tick=%u sgi=%u\n",
 +	    __atomic_load_n(&sweet_cpus_registered, __ATOMIC_ACQUIRE),
 +	    topology->num_cpus, sweet_dbg_tick_count, sweet_dbg_sgi_count);
-
+ 
  	uint64_t deadline;
  	nanoseconds_to_deadline(10 * NSEC_PER_SEC, &deadline);
 +	uint32_t reg_wait = 0;
  	while (__atomic_load_n(&sweet_cpus_registered, __ATOMIC_ACQUIRE) != topology->num_cpus) {
  		if (mach_absolute_time() > deadline) {
  			for (unsigned int i = 0; i < topology->num_cpus; i++) {
-@@ -119,6 +129,9 @@
+@@ -119,5 +129,8 @@
  			panic("SWEET CPU: CPU registration timeout");
  		}
  		IOSleep(1);
@@ -42,7 +42,7 @@
  	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -131,15 +131,17 @@
+@@ -131,18 +131,34 @@
  	for (unsigned int i = 0; i < topology->num_cpus; i++) {
  		SweetCPU *cpu = __atomic_load_n(&sweet_cpus[i], __ATOMIC_ACQUIRE);
  		kern_return_t kr = processor_start(cpu->machProcessor);
@@ -79,7 +79,7 @@
  		IOLog("SWEET CPU: cpu=%u mpidr=0x%x came alive; SGI1 OK\n",
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -213,8 +215,10 @@
+@@ -213,7 +215,11 @@
  	unsigned int aff0 = mpidr & 0xff;
  	if (aff0 >= 16) {
  		panic("SWEET CPU: SGI target requires unsupported range selector");
@@ -93,7 +93,7 @@
  	    (((mpidr >> 8) & 0xff) << 16) |
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -20,6 +20,12 @@
+@@ -20,6 +20,11 @@
  /* Phone default; QEMU virt wires the architected virtual timer to INTID 27. */
  SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
 +/* 0083 bring-up diagnostics: interrupt delivery counters. Never printed
@@ -102,15 +102,15 @@
 +volatile uint32_t sweet_dbg_tick_count;
 +volatile uint32_t sweet_dbg_sgi_count;
  #endif
-
+ 
  static vm_offset_t gicd_base;
  static vm_offset_t gicr_base;
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1872,6 +1872,14 @@
+@@ -1872,9 +1872,18 @@
  	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
  	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
-
+ 
  	if (intid >= 1020 && intid <= 1023) {
  		return; /* spurious */
  	}
@@ -135,38 +135,38 @@
 +extern volatile uint32_t sweet_dbg_tick_count;
 +extern volatile uint32_t sweet_dbg_sgi_count;
  #endif
-
+ 
  #ifdef PRIVATE
 --- a/iokit/Kernel/IOService.cpp
 +++ b/iokit/Kernel/IOService.cpp
-@@ -193,6 +193,11 @@
+@@ -193,7 +193,11 @@
  static IORegistryEntry *        gIOChosenEntry;
-
+ 
  static int                      gIOResourceGenerationCount;
-
+ 
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +/* 0083 bring-up diagnostics: sweetcpudbg=1 stamps every startCandidate. */
 +static bool                     gIOSweetCpuDbg;
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
-
+ 
  const OSSymbol *                gIOServiceKey;
  const OSSymbol *                gIOPublishNotification;
-@@ -470,6 +475,12 @@
+@@ -193,5 +193,10 @@
  	PE_parse_boot_argn("dextrelaunch", &gIODextRelaunchMax, sizeof(gIODextRelaunchMax));
  	PE_parse_boot_argn("iocthreads", &gMaxConfigThreads, sizeof(gMaxConfigThreads));
-
+ 
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	/* Boot arg sweetcpudbg=1: silent-hang wedge locator in the IOKit
 +	 * matching window (AppleCLCD -> SweetCPU when cpus=1). */
 +	PE_parse_boot_argn("sweetcpudbg", &gIOSweetCpuDbg, sizeof(gIOSweetCpuDbg));
 +#endif
-
+ 
  	gIOUserClientClassKey = OSSymbol::withCStringNoCopy( kIOUserClientClassKey );
-@@ -4720,6 +4720,15 @@
+@@ -4720,8 +4720,17 @@
  	if (recordTime) {
  		clock_get_uptime(&startTime);
  	}
-
+ 
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	/* 0083: name the service that is about to start, so a silent hang
 +	 * between IOLog lines becomes a pinpoint instead of a guess. */
@@ -177,6 +177,6 @@
 +#endif
 +
  	ok = service->start(this);
-
+ 
  	if (recordTime) {
  		clock_get_uptime(&endTime);
