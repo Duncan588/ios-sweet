@@ -43,6 +43,26 @@ VENUS_FB_W, VENUS_FB_H = 1440, 3200
 VENUS_FB_STRIDE = VENUS_FB_W * 4
 VENUS_FB_BASE, VENUS_FB_SIZE = 0xE2A00000, 0x2300000
 
+# SM8350 CPU topology, ground truth from mainline Linux
+# arch/arm64/boot/dts/qcom/sm8350.dtsi: cpu0-3 = Cortex-A55 (reg 0x0/0x100/
+# 0x200/0x300), cpu4-6 = Cortex-A78 (0x400-0x600), cpu7 = Cortex-X1 (0x700).
+# MPIDR: Aff0 = 0 for every core, the core number lives in Aff1 -- the same
+# reg layout (core << 8) mkadt.py already emits for sweet's kryo470s, so the
+# xnu topology parser (0065: "Aff1 encodes the core") and the SweetCPU
+# phys_id checks (0078: <=0x700, low byte 0) both hold unchanged.  Only
+# compatible and clock-frequency differ per core.  Max freqs: silver 1.8 GHz,
+# gold 2.4192 GHz, prime 2.8416 GHz.
+VENUS_CPUS = [
+    ('arm,cortex-a55', 1804800000),
+    ('arm,cortex-a55', 1804800000),
+    ('arm,cortex-a55', 1804800000),
+    ('arm,cortex-a55', 1804800000),
+    ('arm,cortex-a78', 2419200000),
+    ('arm,cortex-a78', 2419200000),
+    ('arm,cortex-a78', 2419200000),
+    ('arm,cortex-x1', 2841600000),
+]
+
 DEFAULT_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            '../shim/out/venus-adt.bin')
 # Fixed /chosen random-seed (bytes(range(64))) so Windows/Linux builds agree.
@@ -96,8 +116,8 @@ def build():
     compat = chosen and None  # compatible lives on the root
     set_prop(root, 'compatible',
              mkadt.cstr('D22AP') + mkadt.cstr('iPhone10,3')
-             + mkadt.cstr('xiaomi,venus') + mkadt.cstr('qcom,sm8350')
-             + mkadt.cstr('AppleARM'))
+             + mkadt.cstr('xiaomi,venus') + mkadt.cstr('xiaomi,sweet')
+             + mkadt.cstr('qcom,sm8350') + mkadt.cstr('AppleARM'))
 
     # /memory with the full bank table (Apple ADT reg form: u64 pairs).
     memory = mkadt.node('memory', [
@@ -105,6 +125,18 @@ def build():
     ])
     # Insert right after /chosen; the cpus/arm-io order is untouched.
     root.children.insert(1, memory)
+
+    # Fix the CPU nodes for the real SM8350 topology (see VENUS_CPUS above).
+    # reg / cluster / state / cache-id fields keep mkadt.py's values: the
+    # reg layout is already the mainline sm8350.dtsi MPIDR truth.
+    cpus = next(c for c in root.children if c.name == 'cpus')
+    for core, (compat, freq) in enumerate(VENUS_CPUS):
+        cpu = next(c for c in cpus.children if c.name == f'cpu{core}')
+        reg = cpu.prop('reg')
+        if reg != mkadt.u32(core << 8):
+            raise AssertionError(f'cpu{core}: unexpected reg {reg.hex()}')
+        set_prop(cpu, 'compatible', mkadt.cstr(compat) + mkadt.cstr('ARM,v8'))
+        set_prop(cpu, 'clock-frequency', mkadt.u32(freq))
     return root
 
 
