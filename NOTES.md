@@ -1,3 +1,55 @@
+### >>> UPDATE 2026-10-20i P0093/P0094 就绪（只差发射） <<<
+
+- **入库（GitHub Duncan588/ios-sweet，venus-probe）**：P0093 `a0bae47`（`xnu/patches/0093-sweet-gpt-watchdog.patch`，topaz 0088 逐义移植，已对 bt92 现树重新生成 diff）；P0094 `20c4cae`（`xnu/patches/0094-sweet-imem-breadcrumbs.patch`）。shim 侧提交在笔记本 `~/ios-sweet-vp4` 分支 venus-probe `d4b1f08`（p93_dump + P0094 读回行一并入库；**两条谱系已厘清：GitHub=补丁谱系（0092 在），vp4= shim/loader 谱系， packaging 一律用 vp4 本地源**）。
+- **验证（bt92=CI run 39313815459 的 xnu-buildtree，`~/research/bt92`，留底 `~/research/pre0093|pre0094`）**：两补丁 `git apply --check` 过 + round-trip apply 后 `cmp` 与工作树**逐字节一致（ROUNDTRIP-OK）**；`xnu-cc.py`（/tmp/ci-39313815459.log，9 TU：sweet_ufs.c/sweet_early.c/startup.c/bsd_init.c/IOPlatformExpert.cpp/machine_routines.c/sleh.c/debug.c/pe_init.c）**0 of 9 files failed**；日志 `~/ios-sweet/logs/p0093-0094-xnucc-20261020.log`。
+- **CI run `39328388718` success**（--ref venus-probe @20c4cae）；artifact `xnu-kernel`（id 12223641810）；kernel.development.sweet **17,223,032 B，sha256 `555968f52a69020489db7b32db6f239d2856d2929426c4103f3ff18988507466`**＝SHA256SUMS；二进制 strings：`P0093`×2（find_partition printf + watchdog panic 串）、`P0094`×3、`sweet_imem`×5、`IMEM mapped`×1、`GPT LUN0`×2。
+- **三件套（笔记本 `~/ios-sweet-vp4/shim/out/`，/tmp/kernel-0093 内核）**：
+  - payload-venu0-0093.bin `3a5bc114d80234b8958298b56ba7b9368bb8382f458320e5195f55a7c84f06f3`（16,630,592 B）
+  - shim-boot-venus-0093.img `1bf82926d1b135568ae3c4f0c48d5aa94eab0d6edb0a6d020d6549558c4ea2a4`（17,309,696 B，kernel 192,512 + ramdisk=payload）
+  - `tools/unpack_bootv2.py` 回验 ramdisk 与 payload **字节一致（PAYLOAD-BYTES-MATCH）**；ADT 用 `venus-adt-0083.bin`（INTID27 版未变）；cmdline＝官方 17 参数 + `sweetpanicfreeze=1`。
+- **待发射命令（子代理未执行，禁 fastboot/adb）**：`cd ~/ios-sweet-vp4 && tools/venus_boot_probe.sh shim/out/shim-boot-venus-0093.img`
+- **EXPECT 判读表**：①开机 shim 最早期应先见 `P0093: RESTART REASON raw=…/high16=…`＋4 行 IMEM[0x146bf660/64/68/6c] 原值，再一行 **`P0094: IMEM restart_reason 0x… seq 0x… prev 0x…`**＝**上一手（boot#25/26 wedge）内核最后一次打点**——若该行存在且非空 ⇒ IMEM 通道复活，与 bootinfo.pureason 交叉互证；若 prev/code 全 0 或 ABL 写的哨兵值 ⇒ ABL 在 boot 早段覆写 restart_reason 区（一次发射即判）。②XNU 侧依序应见 `P0094: kernel_bootstrap mark 0x9401`→0x9402(trust cache)→0x9403(bsd_init enter)→0x9404(bsd_init done)；若 wedge，末次 IMEM code 值给指认：0x9405 low8=type / 0x9406 low8=1 ⇒ 内核外复位漏斗（软件复位请求），0x9407+PANIC FREEZE(P0092) 横幅 ⇒ panic 路径，0x9408/0x9409 ⇒ EL1 异常路径（data abort 直指）。③ `P0093 GPT LUN0 hcrc…` 在 ufs takeover 后出现，之后每 10 s 校验，GPT 变更即 `SWEET UFS: P0093 GPT LUN0 CHANGED after Ns…` panic＋(sweetpanicfreeze=1) 冻屏。
+- **风险**：①ABL 覆写 restart_reason 区（见上）；②引导起手仍可能死在 P0094 全部打点之前 ⇒ IMEM 全 0＋屏无 P0094 行＝更早段死亡（shim 侧 bootstrap TTBR0 段）；③shim 现存行为：进 shim 时仍按旧习惯 wr32 `RESTART_BOOTLOADER` 到 0x146bf65c **和** 旧 sweet 基址 0x146aa65c（vp4 线既有逻辑，未动；XNU 后续 mark 会盖掉 code/seq/prev）。
+- 顺带：工程/统计差异（artifact 大小 17,223,032 vs 0092 的 17,222,704 = +328 B，两补丁净增宏内代码量吻合）。
+
+### >>> UPDATE 2026-10-20h 取证执行结果 + P0093/P0094 方案收敛（子代理实施中） <<<
+
+- **用户答复**：boot#25 wedge 后按键情况「记不清」⇒ `pureason=0x40011` 判据降权，仅作旁证。
+- **IMEM 直读（已执行，路线判死）**：`/tmp/imemread` push 到 `/data/local/tmp` 成功但 `open /dev/mem: No such file or device`；本机内核 5.4.302-qgki `CONFIG_DEVMEM is not set`，mknod 也 ENODEV；`/proc/kcore` 不存在；`/sys/fs/pstore` 全空；sysfs 有 `/sys/devices/platform/soc/146bf000.qcom,msm-imem` 平台节点但 **driver 未绑定**（无任何读写接口）⇒ **Android 侧 IMEM 直读不可行，勿再试**。
+- **一手重取证（本 recovery session，/sys/fs/pstore 目录时间戳 04:43）**：`cat /proc/cmdline` 原样含 `bootinfo.pureason=0x40011 bootinfo.pdreason=0x2`——上一手 0x40011 的转述得到原文坐实。
+- **venus IMEM DT 真值首次明确**：`qcom,msm-imem@146bf000`，基址 **0x146bf000**，子节点 `restart_reason@65c` ⇒ 读取/写入地址 **0x146bf65c**（与计划一致）；同级还有 boot_stats@6b0、dload_type@1c、mem_dump_table@10、kaslr_offset@6d0。
+- **方案收敛（交子代理实施，仅构建/验证/打镜像，不发射）**：
+  - **P0093 = topaz gpt-watchdog 必抄**（源：`E:\Hackios\ios-topaz\xnu\patches\0088-topaz-gpt-watchdog.patch` 已通读）：sweet_ufs.c 记录 GPT 主/备头 CRC + 飘窗禁写（`lba<6 || lba+count>gpt_alt-4` 拒写）+ 10 s 看护线程重读比对、变更即 panic 并打印新旧值。理由：userdata 已刷入 iOS root，`ufsrw=1` 真机写路径已激活，GPT 毁了就整砖。
+  - **P0094 = IMEM 面包屑**：XNU 侧在关键复位相关路径（PEHaltRestartInternal/halt_all_cpus/panic_trap（sweetpanicfreeze 之前也写）等）把最新状态字写 IMEM 0x146bf65c 起（每步不同 mark 值）；**补 XNU restart_reason() 的 venus 基址修正（旧 sweet 基址 0x146AA65C 是历史 data abort 根因，venus 必须 0x146bf65c）**；shim 侧在下一帧 boot 最早期读 0x146bf65c 与紧邻 3 字上屏（fbcon 早于一切），取代已死的 Android 直读。待验风险：ABL 是否在每次 boot 早段覆写 restart_reason 区——一次发射即知。
+  - 两者无耦合，同一次 boot#27 携带（发射另行批）。
+- **boot#27 前设备状态**：手机在 LineageOS recovery（adb 授权可用，serial `e528afbe`），`/data/local/tmp/imemread` 残留（无害）。
+
+### >>> UPDATE 2026-10-20g 交接：boot#23–#26 + bootinfo 复位原因取证（AGENT 停手，交棒） <<<
+
+**实况**:手机在 LineageOS recovery,adb 已授权可用(serial `e528afbe`)。这条 recovery 是 boot#25 wedge 后自动重启进的;**待验证用户是否中途按过键**(决定下面 0x40011 是否纯净)。
+
+**(1) 最新观测(boot#22/23/24/25 判读)**:
+- boot#22(kernel-0092 `40e84a2d…`,cmdline+sweetpanicfreeze=1):P0092 startup 全段走完(`static trust cache done`→`OSKextRemoveKextBootstrap`→`machine_lockdown`→`kernel_do_post_init`→`PE_lockdown_iokit`),且出现 `SWEET CPU: 1/1 CPUs initialized`+`Copyright`+`MAC Framework successfully initialized`+`mem_policy_init done` ⇒ 又推进但不稳;**未见** `PANIC FREEZE (P0092)`/漏斗行/EARLY PANIC ⇒ 若干信任 reset 非内核 panic 路径,或漏斗行被快刷(静态屏擦除的证据性局限)。
+- boot#23(0093probe shim):用户屏上**从未出现 P0093 行**,宣称其存在的此前的说法作废——发行说明 sha `afb766d4…` 需重新核实该镜像内容。
+- boot#24(kernel-0092 + `sweetusb=2`,shim `20092usb`):`/tmp/live24.log` 0 bytes,sweet_usb 未启动 ⇒ **在当前死点 SWEET-USB 观测不可用,方案废弃,不要再试**。
+- boot#25(同 0092usb,04:37:13 发射,log `logs/venus-probe-20261020-043713.log`):wedge 后自动回 recovery。
+
+**(2) 重启原因取证(当前主线索,半完成)**:小米 ABL 在每个内核 cmdline 附带 `bootinfo.pureason=… bootinfo.pdreason=…`(上电/下电原因,位表:high16 bit0=wdog、bit1=kpanic、bit2=normal/reboot 命令、bit3=other)。
+- baseline(用户手动按键重启后):`pureason=0x80011`(high16=0x8=other)/`pdreason=0x2`。
+- boot#25 wedge 后自动 recovery 读得:**`pureason=0x40011`(high16=0x4 ⇒ "normal"=软件性 orderly reboot)/`pdreason=0x2`**。
+- **疑点/待判**:①需用户确认 04:37 之后没按过键,否则被污染;②若纯净,则 wedge = 内核或内核外软件下达的 orderly 复位,而非看门狗/panic——但 P0092 漏斗行未上屏,与"软件复位"矛盾,说明复位请求走的是**未插桩路径**(候选:EL1 异常→平台层、TZ/ABL 侧、或漏斗行被刷擦)。getvar 无 reason 变量(`/tmp/getvar_all.log` 已确认),唯一读面是 cmdline。
+- **IMEM 直读(下一个动作,工具已备好)**:`/tmp/imemread`(aarch64 静态,读 IMEM restart_reason=0x146bf65c 及紧邻 0x146bf660/64/68)已编译在 notebook `/tmp/imemread`,推 `/data/local/tmp` 即可跑。adb 若再 unauthorized,轮询 `adb get-state` 重试(不要指望 recovery 有弹窗,直接轮询即可)。这是 bit 表之外的第二独立证据源。
+
+**(3) 已废弃/冻结的观测手段(勿再试)**:串口(无);SWEET-USB live log(起得比死点晚);SWEETlog 环(只在 UFS attach 后 flush,死点在之前);fastboot getvar(reason 变量不存在)。现有手段仅:拍屏(注意复位快刷会擦行,判读用"末行"证据)、bootinfo cmdline、IMEM、以及未来 shim 内预写入。
+
+**(4) 下一步(按优先级)**:
+1. 用户确认按键与否 → 判定 0x40011 是否纯净;纯净则结论"wedge=软件 orderly 复位"入 P0093 依据。
+2. IMEM 直读跑通(工具 ready,一次 push+4 次执行),交叉验证。
+3. **P0093 patch**(编号续 0092 后,候选已收敛):a) raphael 式 ramoops/IMEM 面包屑——kernel 最早段就把状态码写 IMEM,与 (2) 形成闭环;b) lemonadep 式窄面 A/B(裁 008x 增量定位是哪只 patch 触发复位);c) UniXNU 式真 TrustCache 试金(StaticTrustCache+corecrypto+prelink AMFI)。
+4. 必抄:topaz 的 gpt-watchdog 思路;发射周期保持 ≤10 分钟(此前 30 分钟被用户批评)。
+
+**(5) 踩坑留档**:adb 权限每次 kill-server 会掉,轮询重试;`adb shell su -c` 在 recovery 不存在,recovery shell 本身 uid=0;笔记本 toolchain `/usr/bin/aarch64-linux-gnu-gcc` 可用;脚本一律 scp 后 `sed -i 's/\r//g'` 再 bash。本节由被中断的前任 agent 写就,观点/猜测已标注。
+
 ### >>> UPDATE 2026-10-20f boot#22 发射：0092 内核复位漏斗/死窗探针 + sweetpanicfreeze（待拍屏判读） <<<
 
 - **P0092 入库**：patch `8714110`（`0092-sweet-resetfunnel-drill.patch`）+ NOTES `327a977`；验证三绿（bt87 post-0091 树 apply --check / round-trip / xnu-cc.py 9 TU 0 failed）。
