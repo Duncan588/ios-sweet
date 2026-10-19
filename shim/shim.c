@@ -570,6 +570,20 @@ void shim_main(uint64_t dtb)
 	stage = "loader";
 	con_clear(RED);
 	con_str("SHIM", "sweet milestone 4: xnu loader");
+#ifdef VENUS_PROBE
+	/* P-agent port, CORRECT position (2026-10-19): the CPU bring-up
+	 * prints/hooks must run on the REAL payload boot (this path), not
+	 * only on the no-payload probe screen. Topaz runs them right here,
+	 * before handing off to xnu. */
+	venus_cpu_ident();
+	venus_gicr_prepare_cpus();
+	venus_speed_probe();
+	/* Topaz kept this hold until f38d3cf: the red screen is our only
+	 * pre-kernel log channel and the kernel fbcon overwrites it at once
+	 * on success. Hold 8 s so a phone camera can capture the bring-up. */
+	con_str("SHIM", "speed probe shown, xnu in 8 s");
+	delay_ms(8000);
+#endif
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
