@@ -183,3 +183,11 @@ amdisk overlaps kernel memory。
 - 【panic 解码[VERIFIED-本地位域+OSS sleh.c]】d51be228=MSR (register) 写 **CNTP_CTL_EL0**（S3_3_C14_C2_1，RT=x8）→ UNDEFINED trap，sleh.c handle_uncategorized panic。俩假说：(H-EL2) shim/XNU 运行在 EL2，(op0=3,op1=3) 在 EL2 上统一 UNDEFINED；(H-PTIMER) venus/SM8350 把物理 timer 关掉或不解码。sleh.c 全文已存本地 greps；handshake structure not initialized 字符串不在 sleh.c（另一来源，待定位）。
 - 【已知不挡路】test_gic 的 GICR priority 写炸（6e29ec1 已 skip）；红屏 DUMP 部分被异常页覆盖的问题已由 loader 后直接 HOLD 解决。
 - 【agent NOTE】第一次 XNU-panic 分析子代理（ses_ead0c374…）completed 无输出：未发现其留下的 commit/status 改动（git 状态干净，xnu/patches 未动），如报告缺失需重做其任务。
+
+## 第十次：payload 官方对齐 rebuild（2026-10-19，venus-probe）
+
+- 目的：把 venus 的 payload/cmdline/构建组装对齐官方 dipa-studio/ios-sweet 标准流程；venus 此前 cmdline 只有 4 个参数，远少于官方 phone 镜像整串。偏离清单（只列不改）写入 NOTES.md 小节 **official-alignment A**（10 条，含 RAM 放置、CPU 节点未适配、loader 扫描语义等，各自注明保留理由）。
+- 参数裁决：**cpus=1** 保守起步（官方 "cpus=6 starts the six A55 cores; cpus=1 safe fallback"；venus big.LITTLE 拓扑与 sweet 不同且 ADT CPU 节点未适配 SM8350，SMP 留待后续换 cpus=N）；**rd=ufsroot0 ufsrw=1 rootrw=1 带上**（用户还没刷 iOS root，带上有妨无害——无 root 时 panic 语义变 root not found，也是情报）；**sweetfb_noconsole=1 / sweetfb_hz=30 不带**（venus fbcon 是当前唯一输出通道，不能静音 console）。
+- 内核不动不换：xnu/out/kernel.development.sweet sha256 复核 de315bfa…f7dccf（CI run 39193640899），与第九次一致，避免与 XNU 侧修复（CNTP_CTL_EL0 panic）冲突。ADT 沿用 venus-adt.bin（c3dceb02…a1c3e1d）。
+- 产物：shim/out/payload-venu0.bin 16,610,928B sha256 **26e7a2ea312df7f76e19e9bcfe05a1200a34c7c4a466d2b78013466eaac58cff**（fixups=0、virt_base/entry 与第九次逐字段一致——只有 cmdline 变化）。
+- 发射：bundle→scp→ff 笔记本 ~/ios-sweet-vp4 → build.sh --venus 2（v2 头 + /home/monster/vboot_dtb_04.dtb，沿用 19b 成功通路）→ tools/venus_boot_probe.sh 真机（本会话预算 2 次 fastboot boot）。结果补记于本节末尾与 NOTES.md 置顶 UPDATE。

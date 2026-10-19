@@ -2,6 +2,29 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19d payload 官方对齐 rebuild（十次）+ official-alignment A 偏离清单（最先读）<<<
+
+（boot 结果见本节末尾补记；本轮内容 = 只列不改的偏离清单 + 键盘重打 payload。）
+
+#### official-alignment A — venus 路径 vs 官方 dipa-studio/ios-sweet README/流程偏离清单（只列不改）
+
+1. **cmdline：此前 payload-venu0.bin 只有 `debug=0xc serial=3 keepsyms=1 -noprogress`**，远少于官方全串（README §3 "Build the boot image"）。本轮已按官方整串重打（差异仅：cpus=1 保守起步、不带 sweetfb_noconsole=1 / sweetfb_hz=30 —— venus fbcon 是唯一输出通道，noverify 理由见 commit 记录）。
+2. **RAM 放置偏离官方**：官方 sweet payloads 用 upper bank `0x100000000+0xfcc00000`（README "Key hardware facts"）；mkadt_venus.py 的 /chosen dram-base/size 指向**第一个 bank 0x80000000+0x37500000**（低于 4G）。这是 loader.c/mkpayload.py 当前路径的现实约束（kernel VIRT 映射按它算），不是拍脑袋；后续 pmap bank 支持时应迁回 upper bank，未迁移前不换。
+3. **CPU 节点未适配 SM8350**：mkadt.py 继承吐 8 个 cpu 节点（sweet：6×A55 + 2×A76，compatible `qcom,kryo470`，MPIDR sweet 口径）。venus 是 1×X1 + 3×A78 + 4×A55，MPIDR/heterogeneous 拓扑不同。cpus=1 下只用 cpu0，本阶段不受影响；开 SMP 前必须重做 CPU 节点（与 A 的内核侧 EL 修复日之后再动，避免冲突）。
+4. **rd=/ufsrw=/rootrw= 带上但 root 尚未刷**：用户还没往 userdata 刷 iOS root；XNU 起来后 panic 会从「无 root」语义变成 "root not found" 类。属于有意为之（本 boot 的目的是观察 kernel 早期输出/panic 变化）。
+5. **boot header：venus 用 v2 头 + 外挂 vboot_dtb_04.dtb**（build.sh --venus 2 分支）+ `--cmdline "console=null"`；官方 sweet 走同一 v2 形态（--dtb ../dtb/boot_unpacked/dtb），差异仅在 dtb 来源是 ABL 活机 dump 而非 unpack 的 stock boot.img —— 小米 ABL 不吃打进去的 dtb（此前验证），用 fused DTB。属 venus 必然偏离，非自造。
+6. **loader 扫描语义自造**：venus loader.c 在 initrd 里线性扫描 `SWEETXNU` magic（+offset 语义），官方流程 payload 即整个 ramdisk 首字节。这是小米 ABL 在 ramdisk 里拼接 vendor cpio 的现实适配（S5 实机证据），保留。
+7. **ADT /random-seed 固定字节**（mkadt_venus.py FIXED_SEED，官方 mkadt 用 os.urandom）：为 Win/Linux 哈希一致的自造例外，是文档化过的 build constant。
+8. **ADT /product 节点缺失**：官方流程要求从真 D22AP IPSW 提取 d22ap.adt 拷 /product；venus 侧两台机都没有该文件，mkadt.build 走的是"无 /product"分支。开 GUI 前要补。
+9. **build 流程跨两台机**：payload 在 Windows 打、boot.img 在笔记本打（venus_boot_probe.sh 也在笔记本）。官方是单机一条链。运维性质偏离，记录在案。
+10. **venus-adt.bin 不含 --highmem 等价物**：官方 `mkadt.py sweet.adt --highmem`；mkadt_venus.py 无此参数（与其 RAM 偏离 2 同根因）。
+
+最终 cmdline（本轮重打，抄官方整串、按上表 1/4 两点裁剪）：
+`debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1`
+
+- 内核不动不换：xnu/out/kernel.development.sweet sha256 复核 `de315bfa…f7dccf`（CI run 39193640899）与 S2.5 一致；ADT 沿用 shim/out/venus-adt.bin（c3dceb02…a1c3e1d）。
+- （boot#1/#2 结果与产物 sha 见下方补记。）
+
 ### >>> UPDATE 2026-10-19c **XNU 首亮达成**：panic(cpu 0) Undefined kernel instruction（最先读）<<<
 
 - **里程碑[用户实拍 14:49 boot]**：**XNU 已在 venus 上取得控制权**——loader（v2 头：payload found at +0、PHYS base=0x80000000 size=0x37500000、VIRT=0xfffffe0006000000、ENTRY=0xfffffe000748b488、SEGS/ADT/BOOTARGS 全通过）→ JUMP → Apple panic 页：`panic(cpu 0 caller 0xfffffe0007ad6490): Undefined kernel instruction: pc=0xfffffe000749… instr=d51be228 @sleh.c:951` + `handshake structure not initialized` + panic.apple.com 行。
