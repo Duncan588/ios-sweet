@@ -15,12 +15,12 @@
 
 ## Stage 1 — v3 shim 探针
 
-- [ ] 已用 `tools/unpack_bootv2.py`（扩展 v3 语义）解出 stock venus boot，记录 header 字段：header_version、kernel/ramdisk/second size、os_version、header extra 字段
-- [ ] `shim/build.sh` 修改后本地能编（Linux）或 Windows 版本记录；产物 `out/shim-boot.img`
-- [ ] QEMU 冒烟（可选但推荐）：探针在 `-M virt` 输出预期字符串
-- [ ] `fastboot boot out/shim-boot.img` 一次，并记录：屏幕现象 / 无响应时的恢复（拔电 5s）
-- [ ] 屏幕出现探针文字 = [VERIFIED]；未出现时按以下顺序排查原因：boot 校验失败 / v3 头字段不符 / 帧缓冲地址或分辨率 / RAM 窗口
-- [ ] 探针输出包含 `CNTFRQ_EL0` 值与 PSCI 版本号
+- [x] 已用 `tools/unpack_boot.py`（自写，v3 头支持）解出 stock venus boot：header_version=**3**（非 v4），kernel 39,623,136B，cmdline 空（os_version 0x200001a9）；vendor_boot v3 + 227 项 cpio + 17 个 SoC 基树（证据 E:\Hackios\Xiaomi11\out\boot_b、vendor_ramdisk_list.txt，2026-10-19）
+- [x] `shim/build.sh` --venus 在 Linux 编出 out/shim-boot-venus.img（188-196KB， venus-probe 分支 9a16744）
+- [x] QEMU 冒烟：`python3 tools/qemu-venus.py` → venus_probe_ok（fb.txt 含 VENUS PROBE + PSCI method + CNTFRQ），venus-probe 分支 @9a16744
+- [x] `fastboot boot shim-boot-venus.img` 多次（12:35 / 12:40 / 12:47 / 13:04，活动槽 _b，从不写分区）；黑屏恢复长按 Power+VolDown 10s 有效
+- [x] **屏幕出现探针文字 = [VERIFIED]**（13:04 v4 run：用户观察到蓝底白字 + reset in 40s 倒计时）。黑屏期排查记录：v1-v3 黑屏根因 = splash_region 活机值 0xE2A00000 ≠ 静态 dts 0xEA600000（v4 从 ABL DTB 运行时读取后修正）
+- [x] 探针输出包含 CNTFRQ_EL0（真机经 fb 可见；QEMU=0x3B9ACA00/19.2MHz 表）与 PSCI 版本（真机 SYSTEM_OFF 生效 = PSCI 链通）
 
 ## Stage 2 — RAM 窗口侦查
 
