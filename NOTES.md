@@ -1,3 +1,15 @@
+### >>> UPDATE 2026-10-20f boot#22 发射：0092 内核复位漏斗/死窗探针 + sweetpanicfreeze（待拍屏判读） <<<
+
+- **P0092 入库**：patch `8714110`（`0092-sweet-resetfunnel-drill.patch`）+ NOTES `327a977`；验证三绿（bt87 post-0091 树 apply --check / round-trip / xnu-cc.py 9 TU 0 failed）。
+- **CI run `39313815459` success**（19:46:49→19:54:06Z，7m17s，--ref venus-probe @8714110；注意新版 xnu.yml 无 `branch` input，`-f branch` 会 422，须用 `gh workflow run --ref`；第一次误发 main run 已取消）。artifact → `xnu/out-0092`；kernel.development.sweet 17,222,704 B，sha256 `40e84a2d6db5ba87bebcb89981a529579458d433207c97275af63d2b22bc41f3`，二进制含 34 处 `P0092` 字符串（startup/bsd_init/ufs/amfi/sleh/halt/PEHalt 等），与本地 hash 双端一致。
+- **打包（boot#22 专用）**：cmdline = 官方 17 参数 + `sweetpanicfreeze=1`（用户指示新增）。三件：
+  - kernel-0092 `40e84a2d…bc41f3`（17,222,704 B）
+  - payload-venu0-0092.bin `a7992b428093bb57b1540472e756082c4db7fb6d3c035b521cbb50c16fe64fc7`（16,630,256 B）
+  - shim-boot-venus-0092.img `679f4b9e4f00ec24e5f809c1835e9d3c8471bd63fb96ec9e6f108c9f4d0280e2`（17,309,696 B）
+  - 踩坑记录：①build.sh 内部 cd，payload 参数必须**绝对路径**（相对路径报 `cp: stat 失败`）；②手机停在 fastbootd 时 `fastboot boot` 报 `Unrecognized command boot`，须先 `fastboot reboot bootloader`。
+- **boot#22 发射**：2026-10-20 03:58:40 重试，`Booting OKAY`，**观测窗口 03:58:42 起**（首次 03:58:11 在 fastbootd 失败未上机）。log `logs/venus-probe-20261020-035840.log`。
+- **EXPECT**：屏上应见 P0092 探针流（trust cache done → OSKextRemove… → machine_lockdown → PE_lockdown_iokit → bsd_init enter → AMFI/UFS 各步）；若死于复位漏斗，末行 `P0092: PEHaltRestartInternal type=…/halt_all_cpus(reboot=…)` 指认请求者；若走 panic 则 `=== PANIC FREEZE (P0092) ===` 横幅定格不闪重启；末行之后无漏斗行 ⇒ 内核外复位（QCOM WDT/TZ）。判读完在下一节追加。
+
 ### >>> UPDATE 2026-10-20e boot#21 判读 + P0092 复位漏斗/panic 冻结探针 <<<
 
 - **boot#21 判读**：屏至 `Security policy loaded: Guarded vnode policy` → `SWEET: trust caches unavailable (Image4/AMFI not installed)` 后无声重启；0010/0089 的 panic 通道打印一行都未出现 ⇒ **死亡不走 panic()**。另核实 `kernel_bootstrap_log()` 仅 STARTUP_DEBUG_VERBOSE 才打印，trust cache 之后至 bsd_init 的 kernel_bootstrap_thread 末段在真机完全静默，死窗即在此段（或 bsd_init 早期）。
