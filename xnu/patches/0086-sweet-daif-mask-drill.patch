@@ -1,0 +1,55 @@
+xnu: 0086 sweet daif mask drill
+
+drill: 0086 sweet daif mask drill
+
+The empty stub of ml_cpu_power_enable cannot wedge in straight-line
+code, yet on venus the boot dies between "P0084: processor_startup
+master cpu=0 reason=1" and the entry print inside that stub - and only
+on the SECOND processor_start. The only event that can kill a machine
+between two adjacent statements is an asynchronous exception, most
+plausibly the just-rearmed vtimer PPI27 firing (the cpu already has
+IRQs enabled at this point) or an SError.
+
+Drill: around the call, mask IRQ/FIQ/SError/Debug via DAIF, dump
+ISR_EL1 before and after (isr bits: I=1 IRQ pending, F FIQ, A SError),
+then re-enable DAIF immediately after the call. Expected evidence:
+- pre prints, post does not   -> impossible straight-line, console lock
+- post prints, end does not   -> unmasking delivers the killer, i.e.
+                                async exception confirmed
+- everything prints, wedge moved elsewhere -> async path confirmed
+
+diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
+index 7254b06..008600a 100644
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -806,7 +806,28 @@ processor_startup(
+ 		kprintf("P0084: processor_startup master cpu=%d reason=%d\n",
+ 		    processor->cpu_id, reason);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		{
++			uint64_t daif = __builtin_arm_rsr64("DAIF");
++			uint64_t isr = __builtin_arm_rsr64("ISR_EL1");
++
++			/* 0086 wedge drill: see file header. Mask everything
++			 * around the empty-stub call; a death in this window
++			 * with DAIF closed can only be console/SPL state. */
++			__asm__ volatile("msr daifset, #0xf; dmb ish; isb" ::: "memory");
++			kprintf("P0086: master pre: daif=%llx isr=%llx (masked now)\n",
++			    daif, isr);
++		}
++#endif
+ 		ml_cpu_power_enable(processor->cpu_id);
+ 		kprintf("P0084: processor_startup master: ml_cpu_power_enable returned\n");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		{
++			uint64_t isr = __builtin_arm_rsr64("ISR_EL1");
++
++			kprintf("P0086: master post: isr=%llx -> about to unmask\n", isr);
++			__asm__ volatile("msr daifclr, #0xf; dmb ish; isb" ::: "memory");
++			kprintf("P0086: master end: DAIF unmasked ok\n");
++		}
++#endif
+ #else
+ 		ml_cpu_power_enable(processor->cpu_id);
+ #endif
+
