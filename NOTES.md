@@ -2,6 +2,14 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19b 优先 HOLD 红屏 + GIC priority 写 skip（commit `6e29ec1`，已发射 14:34）<<<（最先读）
+
+- **本轮真机证据（合体镜像 efa334c7，用户实拍异常页，全按预期）**：HOLD 生效（异常页不自动消失）✓；IMEM 修复生效（不再 40s 蓝屏循环）✓。异常值：**ESR 0x96000010（sync external abort data abort）、ELR 0xA0081FA4、FAR 0x17A70400、X0=FAR、X30=0xA00841E8、SPSR 0x3C5、STAGE="gic config"**。
+- **反汇编裁决**：ELR 0x1fa4 = `shim_main` 内联 `test_gic` 的 `wr8(r+GICR_IPRIORITYR+id,0xa0)` 循环首写（shim.c:352-353）；r=GICR_BASE+find_gicr off=0=0x17A60000，写地址 = r+GICR_SGI(0x10000)+0x400 = 0x17A70400 ✓=FAR。**venus GIC 常量与 DTB 一致无错**（vboot_dtb_04.dts:1388：GICD@0x17a00000/size 0x10000、GICR@0x17a60000/size 0x100000、stride 0x20000，与 shim.c 完全相同）→ 是 venus (GIC-600?) 对 GICR_SGI+0x400 priority 写的外部中止（或 secure 锁定）。注意：同页更早的 IGROUPR0(+0x80) 写、ISENABLER0(+0x100)/IPRIORITYR+16(+0x410) 读都成功。
+- **改动（6e29ec1，shim.c only）**：①`shim_main` 在 `loader_boot` 返回（=失败，成功不返回）后，VENUS_PROBE 下打完 reason/DUMP 行**立即 HOLD（WFE）**，完全跳过 test_ufs/test_gic 等后续诊断——红屏含全部 DUMP hex 行永驻可拍；②`test_gic` 的 IPRIORITYR 写循环 venus 下整体 skip（不反推 GIC-600）。
+- **构建/发射**：v2 头 `bash build.sh --venus 2 out/payload-venu0.bin /home/monster/vboot_dtb_04.dtb` → `shim-boot-venus.img` 17,289,216B（sha256 `c8d5eb69…f400`；与前轮 17,358,848 差 ~68KB，来自 header/对齐口径，非异常），2026-10-19 14:34:0x fastboot boot OKAY 已发射（log: logs/venus-probe-20261019-143355.log）。**预期：红屏（含 LOADER reason + 16 点 DUMP hex）永驻 → 用户拍照反馈。**
+- **红屏 DUMP 拿到后的判读预案（写死在此，下一轮直接用）**：①第一 dump 点是 `SWEETXNU`/payload 首字节 → initrd 直通成立但 magic 匹配代码有 bug；②是 cpio 特征（ASCII `070701`/文件名）→ payload 在流中的真实位置需推算找打；③GZIP/压缩特征 → ABL 压缩了 ramdisk，下轮换通道（boot header dtb 槽传 payload）或解压。
+
 ### >>> UPDATE 2026-10-19 venus 蓝屏根因 = reset() 写 sweet 的 IMEM 地址（最先读）<<<
 
 - **反汇编裁决（shim.elf VMA=0 基，Image 装在 0xA0080000）**：ELR 0xA0081938 = `reset.constprop.0+0x74` 的 `str w1,[x0]`（x0=0x146aa65c，w1=0x77665500），LR 0x18e4 = 该函数里 con_str("RESET","in 40s") 返回点。**用户实拍的蓝屏是第二次异常**：第一次异常（真凶，ELR 在 loader 阶段，值已丢失）→ exc_handler 画蓝 dump → reset(40) 倒计时完 → 写 0x146aa65c → venus(SM8350) 上同步 external abort → 第二次异常再次画蓝覆盖第一张 → 死循环（每 ~40s 循环一次重画）。X0/X1=FAR=0x146AA65c 组合即 wr32(IMEM_RESTART_REASON,x) 形态。
