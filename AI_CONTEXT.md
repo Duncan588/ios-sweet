@@ -9,7 +9,8 @@
 - **Stage-4 提前验收第一项**：sweet 的 `ufs.c` 在 venus **零适配只读直通**（UFS 分区清单/EFI PART/GPT 全对，用户实拍）。
 - **Stage-2 初步完成**：`tools/mkadt_venus.py`（commit `02593d3`），ADT 带三 RAM bank（0x80000000+0x37500000 / 0xC0000000+0x140000000 / 0x200000000+0x180000000），fbcon reg=0xE2A00000；缺 `d22ap.adt`（Apple IPSW 工件，本地无）→ /product 节点暂缺。
 - **Stage-3 进行中——当前卡点**：SWEETXNU payload（16.6MB，mkpayload 未变）作为 v3 ramdisk；ABL 拼接 initrd = vendor cpio(20.13MB)+payload（从 initrd 区间 0xADC6C000-0xAFF7ECD6=0x2312CD6 推断）。**真实堵墙：总手动反复次 magic 全区扫描判"no SWEETXNU"**；且 shim 的 `restart_reason()` 会写 sweet 的 IMEM 地址 0x146AA65C → venus IMEM 基址不同 → data abort（用户实拍蓝屏异常页 ESR 0x96000010 / FAR 0x146AA65C / STAGE loader / X30≈RESTART_BOOTLOADER 0x77665500）。修复中：venus IMEM 基址（查 dtsi）或跳过 IMEM 写直接 PSCI reset。
-- **诊断铁律**：venus 没有可用串口，屏幕=唯一输出通道；诊断页一律 HOLD 不自动 reset；用户拍照是最高价值证据。
+- **Stage-3 首亮已达成（2026-10-19 14:49）**：v2 头 payload 直通 initrd（+0 命中）→ loader 成功 → **XNU panic 页**（`Undefined kernel instruction: instr=d51be228 @sleh.c:951` + `handshake structure not initialized`）。解码 = MSR CNTP_CTL_EL0 UNDEFINED，俩假说 H-EL2（首选）/H-PTIMER，详见 NOTES.md 2026-10-19c 与 RESEARCH_LOG 第九次。loader 侧修复：`680b729`（kernel_end VA 语义）、`02b70b1`（重叠检查真内核跨度）。
+- **诊断铁律**：venus 没有可用串口，屏幕=唯一输出通道（拍照是唯一读取手段，USB 在 shim 接管后全死）；诊断页一律 HOLD 不自动 reset；用户照片是最高价值证据。
 - **最新 commits**（venus-probe，不 push）：`02593d3` mkadt_venus、`93b2368` notes、`0ba1ea3` initrd 全扫、`4b46496` notes、`7bb9840` hex dump+字节步进+HOLD。生产链在笔记本 `~/ios-sweet-vp4`，payload 固定 `out/payload-venu0.bin`（相对 shim/）。
 - **本会话已沉淀关键事实入库**（hindsight 记忆库 initiated 但如不可用则**以本文为本节真值源**）。
 - 详细见 docs/RESEARCH_LOG.md 「第四次/第五次/第六七次/v4/第八次」节。

@@ -170,3 +170,16 @@ Xiaomi/Qualcomm ABL（解锁 BL，boot v2）
 - 【根因[CONFIRMED-反汇编]】shim.elf VMA=0 基、Image 装载于 0xA0080000：ELR 0xA0081938 = `reset.constprop.0+0x74` 的 `str w1,[x0]`（x0=0x146aa65c、w1=0x77665500），LR 0x18e4 = 同函数 con_str("RESET","in 40s") 返回点。实拍蓝屏是**第二次异常**：第一次异常（真凶，ELR 在 loader 阶段，值未及记录）→ exc_handler 画蓝 → reset(40) → 40s 后写 0x146aa65c → venus 上 data abort（ESR 0x96000010 DFSC=0x10 sync external，FAR=X0=0x146aa65c，X1=w 寄存器立即数形态）→ 第二次 exc_handler 重画蓝覆盖第一张 → 每约 40s 循环。红屏 3-5s 后消失 = INITRD 行打印后进入 35MB 字节步进扫描即撞第一异常（DUMP/LOADER 行从未到达）。
 - 【修复[COMMITTED]】shim/shim.c：①VENUS_PROBE 下 IMEM 写改为 venus 真地址 `0x146bf65c`（venus ABL DTB qcom,msm-imem@146bf000+restart_reason@65c，见 E:\Hackios\Xiaomi11\out\vboot_dtb_04..06.dts；sweet 的 0x146aa65c 原值保留）；② exc_handler 在 VENUS_PROBE 下 dump 后 HOLD（WFE），不再进 reset() —— 下一 boot 蓝屏即第一现场；③ reset() 写 IMEM 前先打 RSTREASON 行。shim/loader.c：payload 头 deref 前加固（version==1、nsegs 1..16、mem_size/kernel_end∈(0,0xC0000000]、phys/virt/entry 非 0、adt_off/命中本址 8B 对齐），拒 vendor cpio 假 SWEETXNU。sweet 默认构建不变。
 - 【观察对照表[下一 boot]】A: 蓝屏一次后 HOLD 常驻（新行 HOLD/“exception screen stays”）→ 第一现场到手，报屏上 ESR/ELR/FAR（预期落在 loader_boot 扫描段）；B: INITRD “payload found at +0x…” + JUMP/JUMPXNU → 扫描活，继续看 xnu；C: “bad payload header” → 假命中被拒，需扩 dump 定位真 magic；D: 蓝屏仍每 ~40s 换新值（有 RESET 行出现）→ 修错方向，按屏上 ELR/FAR 重启调查。
+
+## 2026-10-19（第九次）─ v2 payload 直通 + loader 两处误判修复 + **XNU 首亮（venus 上 XNU 取得控制权）**
+- 【上游对照[VERIFIED-README]】sweet 上游用 boot v2 头（mirror PixelOS），payload 是唯一 ramdisk，ABL 直传 initrd=payload 首字节——无 vendor cpio 拼接。venus 之前用 v3 触发 GKI vendor 拼接＝35MB 混流＝magic 找不到的根因。
+- 【改动[COMMITTED]】shim/build.sh：--venus 接受 2；v2 打包需 --dtb（mkbootimg v2 强制），用 E:\\Hackios\\Xiaomi11\\dtb\\vboot_dtb_04.dtb（dtb_idx=4 活机对应）。
+- 【boot(14:18)+实拍】v2 镜像 INITRD=lo AF027000 hi AFFFE670=0xFD7670≈payload 0xFD57F0；payload found at +0x00000000＝v2 策略成立；随后 ad payload header。
+- 【误判#1[CONFIRMED+修复 680b729]】8165861 的头部加固把 kernel_end 当物理大小（>0xC0000000 拒），实测 payload +0x30 kernel_end=0xfffffe00084c8000 是 VA ⇒ 拒掉真 payload。修复为：virt_base/entry/phys 非 0，mem_size<=0x100000000，kernel_end∈[virt_base, virt_base+0x20000000)。
+- 【boot(14:39)+实拍】PHYS/VIRT/ENTRY 打印＝头通过；随后 
+amdisk overlaps kernel memory。
+- 【误判#2[CONFIRMED+修复 02b70b1]】重叠检查用 mem_size=0x37500000（RAM bank 尺寸，交给 XNU 的 memSize）而非内核跨度；initrd 0xAF027000 与内核目标 0x80000000..kernel_end(+ADT+2*16K) 并不重叠。改为按 kernel_end 跨度判定。
+- 【boot(14:49)+实拍＝里程碑】**XNU panic 页**：panic(cpu 0 caller 0xfffffe0007ad6490): Undefined kernel instruction: pc=0xfffffe000749… instr=d51be228 @sleh.c:951＋handshake structure not initialized＋panic.apple.com 提示＝loader/复制/ADT/boot_args/入口跳转全被 XNU 接受，S3 首亮达成。
+- 【panic 解码[VERIFIED-本地位域+OSS sleh.c]】d51be228=MSR (register) 写 **CNTP_CTL_EL0**（S3_3_C14_C2_1，RT=x8）→ UNDEFINED trap，sleh.c handle_uncategorized panic。俩假说：(H-EL2) shim/XNU 运行在 EL2，(op0=3,op1=3) 在 EL2 上统一 UNDEFINED；(H-PTIMER) venus/SM8350 把物理 timer 关掉或不解码。sleh.c 全文已存本地 greps；handshake structure not initialized 字符串不在 sleh.c（另一来源，待定位）。
+- 【已知不挡路】test_gic 的 GICR priority 写炸（6e29ec1 已 skip）；红屏 DUMP 部分被异常页覆盖的问题已由 loader 后直接 HOLD 解决。
+- 【agent NOTE】第一次 XNU-panic 分析子代理（ses_ead0c374…）completed 无输出：未发现其留下的 commit/status 改动（git 状态干净，xnu/patches 未动），如报告缺失需重做其任务。

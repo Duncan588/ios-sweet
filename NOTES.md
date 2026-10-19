@@ -2,6 +2,14 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19c **XNU 首亮达成**：panic(cpu 0) Undefined kernel instruction（最先读）<<<
+
+- **里程碑[用户实拍 14:49 boot]**：**XNU 已在 venus 上取得控制权**——loader（v2 头：payload found at +0、PHYS base=0x80000000 size=0x37500000、VIRT=0xfffffe0006000000、ENTRY=0xfffffe000748b488、SEGS/ADT/BOOTARGS 全通过）→ JUMP → Apple panic 页：`panic(cpu 0 caller 0xfffffe0007ad6490): Undefined kernel instruction: pc=0xfffffe000749… instr=d51be228 @sleh.c:951` + `handshake structure not initialized` + panic.apple.com 行。
+- **指令解码[本地位域+apple-oss sleh.c 核对]**：d51be228 = MSR (register) 写 **CNTP_CTL_EL0**（S3_3_C14_C2_1，Rt=x8）→ UNDEFINED trap。两个假说：**H-EL2**（shim/XNU 跑在 EL2，(op0=3,op1=3) 系统寄存器在 EL2 上统一 UNDEFINED）**首选**；H-PTIMER（venus 关闭物理 timer）次之。`handshake structure not initialized` 字符串不在 sleh.c（另一文件来源，待定位；不挡路）。
+- **本轮 loader 修复（连过两关）**：`680b729` 头部检查语义（kernel_end 是 VA 非 size）、`02b70b1` 重叠检查按真实内核跨度（kernel_end+ADT+2*16K，非 mem_size=bank 尺寸）。都由 v2 实拍红屏行号确认后修复。
+- **进程状态**：XNU-panic 分析子代理（ses_ead0c374…）completed **无输出**，git 状态干净、xnu/patches 未动＝该任务需重做（分析进行中：EL 判定 + 可能的 start.S 降 EL1 / XNU 补丁换 CNTV）。
+- **文档**：docs/RESEARCH_LOG.md 有「第九次：v2 直通 + 两处误判修复 + XNU 首亮」全节；venus 铁律（HOLD 不 reset、屏幕唯一输出、IMEM 地址 w/ 0x146bf65c、GIC skip）不变。
+
 ### >>> UPDATE 2026-10-19b 优先 HOLD 红屏 + GIC priority 写 skip（commit `6e29ec1`，已发射 14:34）<<<（最先读）
 
 - **本轮真机证据（合体镜像 efa334c7，用户实拍异常页，全按预期）**：HOLD 生效（异常页不自动消失）✓；IMEM 修复生效（不再 40s 蓝屏循环）✓。异常值：**ESR 0x96000010（sync external abort data abort）、ELR 0xA0081FA4、FAR 0x17A70400、X0=FAR、X30=0xA00841E8、SPSR 0x3C5、STAGE="gic config"**。
