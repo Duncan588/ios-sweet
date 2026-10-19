@@ -13,5 +13,5 @@ int fdt_get_string(uintptr_t fdt, const char *path, const char *prop, char *out,
  * Cell-count agnostic on the common layouts: 16 bytes (2+2 cells, 64-bit
  * address and size, the live venus /reserved-memory style) or 8 bytes
  * (1+1 cells, 32-bit). Returns 0 if node/reg absent or the encoding is
- * neither of those; on failure *base/*size are untouched. */
+ * neither of those; on failure the outputs are untouched. */
 int fdt_get_reg(uintptr_t fdt, const char *path, uint64_t *base, uint64_t *size);
