@@ -36,7 +36,7 @@ exec > >(tee -a "$logfile") 2> >(tee -a "$logfile" >&2)
 echo "== venus boot probe $(date +%F\ %T), image=$img =="
 
 have_state() { fastboot devices 2>/dev/null | grep -q .; }
-have_adb()   { adb devices 2>/dev/null | awk 'NR>2{print $2}' | grep -qx device; }
+have_adb()   { adb devices 2>/dev/null | awk 'NR>1{print $2}' | grep -qx device; }
 
 if have_state; then
 	echo "[pre] device already in fastboot mode"
