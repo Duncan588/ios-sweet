@@ -29,14 +29,17 @@ reading explains the difference as a swallow, not a platform wedge:
   the hand-over (early_disabled=1) happens on every venus boot: the
   panic string was swallowed as well.
 - the debugger tail print (panic_debugger_log at the end of
-  debugger_collect_diagnostics) never ran on hardware because
-  PEHaltRestartInternal(kPEPanicBegin) -> PE_init_panicheader() hits its
-  assert(gPanicBase != 0); the nested panic that follows degrades to the
-  nested-panic stall in panic_stop()/panic_spin_forever() with all of
-  its messages dropped into the paniclog that does not exist.  That is
-  the ARIAS freeze point.  (QEMU printed the panic line earlier in the
-  path because it crossed debugger_collect_diagnostics while console
-  output was still linked in.)
+  debugger_collect_diagnostics) never ran on hardware: on venus the
+  PE_arm_debug_enable_trace beat pair completed and the freeze lands
+  between it and the tail print - most plausibly inside the hardware
+  steps driven from PEHaltRestartInternal(kPEPanicBegin) that the QEMU
+  model lacks (the qemu run crosses the whole path and prints the
+  panic line through consdebug at the tail).  With gPanicBase == 0 all
+  the paniclog calls along this path no-op into a NULL buffer, and no
+  assert fires on either board (PE_init_panicheader() is NULL-guarded;
+  PE_get_offset_into_panic_region() is only reached when
+  debug_buf_base is set): what stops venus is the hardware beat, and
+  the missing buffer is what hides the whole panic story.
 
 This patch, everything inside #if defined(ARM64_BOARD_CONFIG_SWEET)
 (unless already gated by an existing #if block):
