@@ -26,6 +26,11 @@ void con_clear(uint32_t bg)
 	row = 0;
 }
 
+void con_reset_row(void)
+{
+	row = 0;
+}
+
 static void put_char(int col, char ch, uint32_t fg)
 {
 	if (ch < 0x20 || ch > 0x7e)

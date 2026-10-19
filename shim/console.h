@@ -23,6 +23,7 @@
 extern volatile uint32_t *con_fb;
 
 void con_clear(uint32_t bg);
+void con_reset_row(void);	/* banner re-draw on another fb region without clearing it */
 void con_skip(void);
 void con_str(const char *label, const char *s);
 void con_hex(const char *label, uint64_t v);

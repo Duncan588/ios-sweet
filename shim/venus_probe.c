@@ -1,10 +1,13 @@
 /*
- * Venus probe path (Xiaomi 11, SM8350). Called from shim_main when built
+ * Venus probe path v3 (Xiaomi 11, SM8350). Called from shim_main when built
  * with -DVENUS_PROBE; the sweet (sm7150) build is untouched. Entry logic:
  * start.S -> shim_main -> check FDT /chosen "linux,initrd-start"; when the
- * bootloader did not hand us an initrd, run the probe screen: banner,
- * CNTFRQ_EL0 and the SMCCC PSCI version. Returns 0 to fall through to the
- * sweet loader path (initrd present), never returns inside probe mode.
+ * bootloader did not hand us an initrd, run the probe: multi-candidate FB
+ * banner (no screen clear after the first region), CNTFRQ_EL0, SMCCC PSCI
+ * version, then a self-terminating sequence: ~10 s busy-wait (CNTFRQ-scaled)
+ * -> PSCI SYSTEM_OFF; if the call returns failure, PSCI SYSTEM_RESET.
+ * v3 semantics: power off, reboot, or fall back to ABL — it never hangs on
+ * screen. Returns 1 so shim_main does NOT fall through to the loader.
  */
 #include <stdint.h>
 #include "console.h"
@@ -13,7 +16,17 @@
 #include "venus_probe.h"
 
 #define PSCI_VERSION		0x84000000UL
+#define PSCI_SYSTEM_OFF		0x84000008UL
 #define PSCI_SYSTEM_RESET	0x84000009UL
+
+/* Splash-region neighbors to try when the documented base does not light the
+ * panel: +32 MiB into the region, and the sm7150-era simplefb base. */
+static const uintptr_t fb_bases[] = {
+	VENUS_FB_BASE,		/* 0xEA600000: splash_region reg, from DT */
+	0xEA800000UL,		/* +0x02000000: ABL may have moved the scanout */
+	0x9C000000UL,		/* historical sm7150 cont_splash base */
+};
+#define FB_BASES_N	(sizeof(fb_bases) / sizeof(fb_bases[0]))
 
 #define rsr(r) ({ uint64_t _v; __asm__ volatile("mrs %0, " r : "=r"(_v)); _v; })
 
@@ -53,34 +66,74 @@ static uint64_t psci_call(uintptr_t dtb, uint64_t fn)
 	return venus_smc(fn);
 }
 
-static void venus_spin(void)
+/* psci_call_with_id: thin alias so call sites read as (dtb, fn-id); both
+ * SYSTEM_OFF (0x84000008) and SYSTEM_RESET (0x84000009) take no arguments. */
+#define psci_call_with_id(dtb, id)	psci_call((dtb), (id))
+
+static void venus_delay_ten_seconds(void)
 {
-	for (;;)
-		__asm__ volatile("wfe");
+	uint64_t n = rsr("cntfrq_el0");	/* ticks per second */
+
+	n *= 10;
+	while (n--)
+		__asm__ volatile("nop");
+}
+
+static void banner(uintptr_t base, const char *region_note)
+{
+	static char hex[] = "0123456789ABCDEF";
+	char buf[9];
+	int i;
+
+	for (i = 0; i < 8; i++)
+		buf[i] = hex[(base >> (4 * (7 - i))) & 0xf];
+	buf[8] = 0;
+	con_str("FB BASE", buf);			/* per-region marker line */
+	if (region_note && region_note[0])
+		con_str("REGION", region_note);
+	con_str("VENUS", "PROBE v3 " VENUS_PROBE_TAG);
 }
 
 int venus_probe_entry(uintptr_t dtb)
 {
 	uint64_t initrd = 0;
+	uint64_t off_ret;
+	char method[8] = {0};
 
 	if (fdt_chosen_u64(dtb, "linux,initrd-start", &initrd) && initrd)
 		return 0;	/* initrd present: let the payload path handle it */
 
+	/* Region 0: full banner on a cleared screen. */
+	con_fb = (volatile uint32_t *)fb_bases[0];
 	con_clear(BLUE);
-	con_skip();
-	con_str("VENUS", "PROBE " VENUS_PROBE_TAG);	/* VENUS PROBE <string> */
-	if (initrd)	/* initrd marker present but zero: report as such */
-		con_hex("INITRD", initrd);
-	else
-		con_str("INITRD", "absent in /chosen (vendor_boot ramdisk not wired)");
+	banner(fb_bases[0], "primary (dt splash_region)");
+	con_str("INITRD", "absent in /chosen (vendor_boot ramdisk not wired)");
 	con_hex("CNTFRQ_EL0", rsr("cntfrq_el0"));
-	{
-		char method[8] = {0};
-		fdt_get_string(dtb, "/psci", "method", method, sizeof(method));
-		con_str("PSCI method", method[0] ? method : "absent in DTB (assuming smc)");
-		con_hex("PSCI ver", psci_call(dtb, PSCI_VERSION));
+	fdt_get_string(dtb, "/psci", "method", method, sizeof(method));
+	con_str("PSCI method", method[0] ? method : "absent in DTB (assuming smc)");
+	con_hex("PSCI ver", psci_call(dtb, PSCI_VERSION));
+
+	/* Regions 1..n: same-size banner re-draw, no clear, base value shown. */
+	for (unsigned i = 1; i < FB_BASES_N; i++) {
+		con_fb = (volatile uint32_t *)fb_bases[i];
+		con_reset_row();
+		banner(fb_bases[i], "alt candidate");
 	}
+
+	/* Back to the documented base for the closing line, then the
+	 * self-terminating sequence burned in before the off/reset attempt. */
+	con_fb = (volatile uint32_t *)fb_bases[0];
 	con_skip();
-	con_str("VENUS", "probe done, no reset call (held on screen)");
-	venus_spin();
+	con_str("VENUS", "probe v3 done, system_off next");
+	venus_delay_ten_seconds();
+
+	off_ret = psci_call_with_id(dtb, PSCI_SYSTEM_OFF);
+	if (off_ret != 0) {			/* PSCI NOT_SUPPORTED etc. */
+		con_fb = (volatile uint32_t *)fb_bases[0];
+		con_skip();
+		con_str("SYSTEM_OFF", "rejected, system_reset next");
+		psci_call_with_id(dtb, PSCI_SYSTEM_RESET);
+	}
+	return 1;	/* unreachable on success; keeps -Wreturn-type quiet and
+			 * tells shim_main the probe path fully took over */
 }
