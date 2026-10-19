@@ -2,6 +2,18 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19f venus CNTP panic 根因判决 + 官方风格 patch 0082（最先读这节） <<<
+
+- **根因判决（静态三板斧，全在本机完成）**：
+  ①符号定位：boot 用内核 `xnu/out/kernel.development.sweet`（sha256 `de315bfa…f7dccf` = 第一次 boot 内核）Mach-O 符号表解析，panic caller `0xfffffe0007ad6490` = `_sleh_serror.cold.1`（即 OSS sleh.c:949 `panic("Undefined kernel instruction…")` 的 cold 块，消息与实拍一致）。
+  ②capstone 反汇编 `_fiq_context_init`（0xfffffe0007491334，正好落在实拍 pc `0xfffffe000749…` 段）：`mrs x8,daif; tbz …; mov w8,#1; msr CNTV_CTL_EL0,x8; mov w8,#2; msr CNTP_CTL_EL0,x8(0x7491348)`——**最后一条 = d51be228 逐位相等（Rt=x8 亦吻合）**。
+  ③oss 对源：xnu-8796.101.5 `osfmk/arm64/machine_routines.c:2241` `_enable_virtual_timer()`：enable CNTV 后例行写 `CNTP_CTL_EL0 IMASKED`（注释原文 "disable the physical timer as a precaution"）。内核全库唯一 CNTP 写点（OSS grep 证实，无 fallback 路径）。
+- **排除三个候选**：(a) EL2 运行——反证：同一条指令流在 CNTP 之前的 `msr CNTV_CTL_EL0`（0x7491340）成功执行（pc 是 CNTP 那条）；EL2 下 S3_3 系寄存器连第一条都会 UNDEF。且 shim 异常处理用 elr_el1、venus PSCI smc 已通 → EL1。(b) PTIMER 关闭（PPI30 缺失）——寄存器访问与 PPI 布线无关，缺中断只会收不到 IRQ 不会 UNDEF。(c) boot-args/DT fallback——无此路径。**真因 = venus/SM8350 固件（QHEE 一系）把 EL1 的 CNTP_* 访问困住（sweet/SM7150 放行——sweet shim 曾在 EL1 成功读写 CNTP 即铁证），trap 被上抛为 UNDEF。**
+- `handshake structure not initialized` 出处：`osfmk/kdp/output_stages/out_shmem.c`（KDP out_shmem printf 阶段，良性日志行，非第二 fault）。判定为否定后一条路。
+- **修复 = 官方风格新 patch `xnu/patches/0082-sweet-no-ptimer-ctl-write.patch`**：`#if defined(SWEET)` 包住 CNTP 预防写（SWEET 下只留注释说明），非 SWEET 语义不变。编号顺延在 0081 之后；风格对齐 0017。已在干净 OSS machine_routines.c 上 `git apply --check` 通过（0008 只碰同文件 2164 附近不同函数，无冲突）。
+- 本地 xnu-cc.py 单文件编译不可用（Windows 无 ~/swift clang 与 buildtree），编译验证由 CI 全量构建承担（keep_going）。
+- **B 代理 boot 说明**：CI 新内核落地 `xnu/out/0082/`（不动 xnu/out 现货），re-payload 仍 `tools/mkpayload.py xnu/out/0082/kernel.development.sweet …` 老命令不变；boot_args/ADT 不变。
+
 ### >>> UPDATE 2026-10-19e d22ap.adt 官方路线提取，/product 补齐（venus-adt.bin 已重打）（最先读这节） <<<
 
 - 官方 README 命令原样执行（Windows 本机，无真机操作）：

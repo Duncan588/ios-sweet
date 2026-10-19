@@ -1,0 +1,25 @@
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2246,9 +2246,21 @@
+ static void
+ _enable_virtual_timer(void)
+ {
+ 	uint64_t cntvctl = CNTV_CTL_EL0_ENABLE; /* One wants to use 32 bits, but "mrs" prefers it this way */
+
+ 	__builtin_arm_wsr64("CNTV_CTL_EL0", cntvctl);
++#if defined(SWEET)
++	/*
++	 * Don't touch CNTP_CTL_EL0. Stock xnu masks the physical timer here as
++	 * a precaution, but on SWEET hardware the resident firmware that hands
++	 * the CPU over at EL1 may trap CNTP_* registers: on Xiaomi 11 (SM8350,
++	 * "venus") this MSR (0xd51be228) raises UNDEFINED and panics in
++	 * sleh.c handle_uncategorized. We never use the physical timer - the
++	 * decrementer runs on the virtual timer, whose PPI the device tree
++	 * selects (0017-sweet-device-tree-virtual-timer-irq).
++	 */
++#else
+ 	/* disable the physical timer as a precaution, as its registers reset to architecturally unknown values */
+ 	__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
++#endif
+ }
