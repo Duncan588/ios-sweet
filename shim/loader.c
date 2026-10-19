@@ -154,8 +154,12 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex("VIRT", p->virt_base);
 	con_hex("ENTRY", p->entry_va);
 
-	/* The payload must not overlap where the kernel goes. */
-	if (rd_end > p->phys_base && rd_start < p->phys_base + p->mem_size)
+	/* The payload must not overlap where the kernel goes: segs (which render
+	 * as phys_base .. kernel_end), the ADT and the 16K-aligned boot_args page.
+	 * p->mem_size is the *DRAM bank size* handed to XNU, NOT the kernel span
+	 * -- comparing against it wrongly rejects a fine ramdisk (venus hit). */
+	uintptr_t dest_end = (p->kernel_end + pa_of_va_base) + p->adt_size + 2 * PAGE_16K;
+	if (rd_end > p->phys_base && rd_start < dest_end)
 		return "ramdisk overlaps kernel memory";
 
 	for (uint32_t i = 0; i < p->nsegs; i++) {
