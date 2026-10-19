@@ -1,0 +1,239 @@
+diff --git a/iokit/Kernel/IOCPU.cpp b/iokit/Kernel/IOCPU.cpp
+index fd70a82..a4a8419 100644
+--- a/iokit/Kernel/IOCPU.cpp
++++ b/iokit/Kernel/IOCPU.cpp
+@@ -142,7 +142,16 @@ PE_cpu_machine_init(cpu_id_t target, boolean_t bootb)
+ 		panic("%s: invalid target CPU %p", __func__, target);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0084 bring-up diagnostics: bracket the initCPU() call for every
++	 * CPU (ARM64_BOARD_CONFIG_SWEET is a global compiler define, so this
++	 * is live in iokit even without including board_config.h). */
++	kprintf("P0084: PE_cpu_machine_init: target=%p bootb=%d\n", targetCPU, (int)bootb);
++#endif
+ 	targetCPU->initCPU(bootb);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	kprintf("P0084: PE_cpu_machine_init: initCPU returned\n");
++#endif
+ #if defined(__arm64__)
+ 	if (!bootb && (targetCPU->getCPUNumber() == (UInt32)master_cpu)) {
+ 		ml_set_is_quiescing(false);
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 2545cf9..bff3d96 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -133,6 +133,9 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 
+ 	uint64_t deadline;
+ 	nanoseconds_to_deadline(10 * NSEC_PER_SEC, &deadline);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	uint32_t reg_wait_beat = 0;
++#endif
+ 	while (__atomic_load_n(&sweet_cpus_registered, __ATOMIC_ACQUIRE) != topology->num_cpus) {
+ 		if (mach_absolute_time() > deadline) {
+ 			for (unsigned int i = 0; i < topology->num_cpus; i++) {
+@@ -143,6 +146,15 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 			panic("SWEET CPU: CPU registration timeout");
+ 		}
+ 		IOSleep(1);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* 0084: registration-wait beat for the matching window. */
++		if (((++reg_wait_beat) & 0x3ff) == 0) {
++			kprintf("P0084: startAll: registration wait=%u registered=%u/%u\n",
++			    reg_wait_beat,
++			    __atomic_load_n(&sweet_cpus_registered, __ATOMIC_ACQUIRE),
++			    topology->num_cpus);
++		}
++#endif
+ 	}
+ 	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
+ 	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
+@@ -150,12 +162,25 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 	}
+ 	for (unsigned int i = 0; i < topology->num_cpus; i++) {
+ 		SweetCPU *cpu = __atomic_load_n(&sweet_cpus[i], __ATOMIC_ACQUIRE);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* 0084 bring-up diagnostics: the on-device wedge is a
++		 * processor_start() call that never returns; bracket it with
++		 * beats independent of the 0083 patch (which the CI
++		 * patch-loop silently skipped while it was malformed). */
++		kprintf("P0084: startAll: cpu=%u before processor_start\n", i);
++#endif
+ 		kern_return_t kr = processor_start(cpu->machProcessor);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		kprintf("P0084: startAll: cpu=%u processor_start returned %d\n", i, kr);
++#endif
+ 		if (kr != KERN_SUCCESS) {
+ 			panic("SWEET CPU: cpu=%u processor_start failed: %d", i, kr);
+ 		}
+ 		/* processor_start() is asynchronous for secondaries in this XNU. */
+ 		nanoseconds_to_deadline(5 * NSEC_PER_SEC, &deadline);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		uint32_t alive_wait = 0;
++#endif
+ 		while (__atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE) == 0 ||
+ 		    !sweet_cpu_signal_is_enabled(i)) {
+ 			if (mach_absolute_time() > deadline) {
+@@ -164,6 +189,17 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 				panic("SWEET CPU: cpu=%u startup timeout (reset/MMU/GIC/SGI)", i);
+ 			}
+ 			IOSleep(1);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++			/* 0084: alive-wait beat. If these keep printing, the
++			 * wedge is the SGI/signal path, not the clock. */
++			if (((++alive_wait) & 0x3ff) == 0) {
++				kprintf("P0084: startAll: cpu=%u alive-wait=%u "
++				    "initialized=%u sig=%d\n",
++				    i, alive_wait,
++				    __atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE),
++				    sweet_cpu_signal_is_enabled(i));
++			}
++#endif
+ 		}
+ 		IOLog("SWEET CPU: cpu=%u mpidr=0x%x came alive; SGI1 OK\n",
+ 		    i, topology->cpus[i].phys_id);
+@@ -188,17 +224,30 @@ SweetCPU::free(void)
+ void
+ SweetCPU::initCPU(bool boot)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0084 bring-up diagnostics: the last confirmed message on venus was
++	 * this function's tail kprintf; report each step inside so the next
++	 * silent hang captures the exact statement before the wedge. */
++	kprintf("P0084: initCPU entry cpu=%u boot=%d\n", getCPUNumber(), (int)boot);
++#endif
+ 	if (!boot) {
+ 		panic("SWEET CPU: cpu=%u resume is not implemented", getCPUNumber());
+ 	}
+ 	assert(cpu_number() == (int)getCPUNumber());
+ 
+ 	ml_broadcast_cpu_event(CPU_BOOTED, getCPUNumber());
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	kprintf("P0084: initCPU: CPU_BOOTED event returned cpu=%u\n", getCPUNumber());
++#endif
+ 
+ 	/* Secondary startup runs at splsched: queue the self-IPI and return.
+ 	 * startAll waits for its delivery after the startup thread unmasks IRQs.
+ 	 * Waiting here with DAIF.I set would deadlock every secondary. */
+ 	signalCPU(this);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	kprintf("P0084: initCPU: ICC_SGI1R written cpu=%u SIGPdisabled=%d\n",
++	    getCPUNumber(), !sweet_cpu_signal_is_enabled(getCPUNumber()));
++#endif
+ 	setCPUState(kIOCPUStateRunning);
+ 	kprintf("SWEET CPU: cpu=%u entered initCPU mpidr=0x%llx EL%llu IRQs=%u\n",
+ 	    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
+diff --git a/osfmk/arm/cpu_common.c b/osfmk/arm/cpu_common.c
+index abf7ec7..b0bfadc 100644
+--- a/osfmk/arm/cpu_common.c
++++ b/osfmk/arm/cpu_common.c
+@@ -32,6 +32,7 @@
+  */
+ 
+ #include <kern/machine.h>
++#include <kern/misc_protos.h>	/* kprintf (0084 bring-up diagnostics) */
+ #include <kern/cpu_number.h>
+ #include <kern/thread.h>
+ #include <kern/percpu.h>
+@@ -685,15 +686,32 @@ cpu_machine_init(void)
+ 
+ 	cpu_data_ptr = getCpuDatap();
+ 	started = ((cpu_data_ptr->cpu_flags & StartedState) == StartedState);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	kprintf("P0084: cpu_machine_init: cpu=%p boot=%d\n", cpu_data_ptr->cpu_id, !started);
++#endif
+ 	if (cpu_data_ptr->cpu_cache_dispatch != NULL) {
+ 		platform_cache_init();
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0084: PE_cpu_machine_init lands in SweetCPU::initCPU, whose tail
++	 * kprintf was the final device line; show entry/exit around it. */
++	kprintf("P0084: cpu_machine_init: before PE_cpu_machine_init\n");
++#endif
+ 	/* Note: this calls IOCPURunPlatformActiveActions when resuming on boot cpu */
+ 	PE_cpu_machine_init(cpu_data_ptr->cpu_id, !started);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	kprintf("P0084: cpu_machine_init: PE_cpu_machine_init returned\n");
++#endif
+ 
+ 	cpu_data_ptr->cpu_flags |= StartedState;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	kprintf("P0084: cpu_machine_init: before ml_init_interrupt\n");
++#endif
+ 	ml_init_interrupt();
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	kprintf("P0084: cpu_machine_init: done\n");
++#endif
+ }
+ 
+ processor_t
+diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
+index b082a10..b5ba132 100644
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -899,8 +899,20 @@ cpu_start(int cpu)
+ 	}
+ 
+ 	if (cpu == cpu_number()) {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* 0084 bring-up diagnostics: the boot-CPU self-start branch is
++		 * the last path with a confirmed log line on venus ("start()
++		 * cpu: 0"). Bracket everything after SweetCPU initCPU's tail
++		 * kprintf, which is the last message the device produced. */
++		kprintf("P0084: cpu_start: before cpu_machine_init cpu=%d\n", cpu);
+ 		cpu_machine_init();
++		kprintf("P0084: cpu_start: cpu_machine_init returned\n");
+ 		configure_coresight_registers(cpu_data_ptr);
++		kprintf("P0084: cpu_start: configure_coresight returned\n");
++#else
++		cpu_machine_init();
++		configure_coresight_registers(cpu_data_ptr);
++#endif
+ 	} else {
+ 		thread_t first_thread;
+ 		cpu_data_ptr->cpu_reset_handler = (vm_offset_t) start_cpu_paddr;
+diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
+index aad9f3b..7254b06 100644
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -798,14 +798,37 @@ processor_startup(
+ 
+ 		processor->last_startup_reason = reason;
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* 0084 bring-up diagnostics: beats inside processor_start for
++		 * the boot CPU (kern/processor.c::processor_startup master
++		 * branch). The last confirmed line on venus was SweetCPU
++		 * initCPU's own kprintf inside cpu_start -> cpu_machine_init;
++		 * these beats bracket every step after it. */
++		kprintf("P0084: processor_startup master cpu=%d reason=%d\n",
++		    processor->cpu_id, reason);
+ 		ml_cpu_power_enable(processor->cpu_id);
++		kprintf("P0084: processor_startup master: ml_cpu_power_enable returned\n");
++#else
++		ml_cpu_power_enable(processor->cpu_id);
++#endif
+ 
+ 		prev = thread_bind(processor);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		kprintf("P0084: processor_startup master: thread_bind(self) prev=%p\n", prev);
++		thread_block(THREAD_CONTINUE_NULL);
++		kprintf("P0084: processor_startup master: thread_block returned\n");
++#else
+ 		thread_block(THREAD_CONTINUE_NULL);
++#endif
+ 
+ 		result = cpu_start(processor->cpu_id);
+-
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		kprintf("P0084: processor_startup master: cpu_start returned %d\n", result);
+ 		thread_bind(prev);
++		kprintf("P0084: processor_startup master: thread_bind(prev) returned\n");
++#else
++		thread_bind(prev);
++#endif
+ 
+ 		lck_mtx_unlock(&processor_updown_lock);
+ 		return result;
