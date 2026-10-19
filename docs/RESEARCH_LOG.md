@@ -198,3 +198,12 @@ amdisk overlaps kernel memory。
 - boot#1 15:46:19 发射（fastboot boot OKAY，max-download 805306368，slot b，unlocked），观察窗后设备 fastboot/adb 双离线 = XNU panic 剖面不变。**待用户拍照判读屏幕**（panic 全文 / 红屏 DUMP / 黑屏），判读结果记入下一轮。boot#2 保留（同镜像再发射无增量信息，留给 A 的 CNTP_CTL_EL0 修复）。
 - 产物：shim-boot-venus.img 17,289,216B sha256 73b89ee21a2c319a5e9ef98e1d96b70699edc7b5c895f719362e67f005ea08e5。
 
+
+
+## 第十二次：SMP initCPU hang（2026-10-19，venus-probe）
+
+- **画像（两次 boot 复现，log 形态）**：0082 内核（14ccbd96）+ ADT 67dad381 + 官方整串 cmdline（cpus=1）：\SWEET CPU: requested=1 selected=1 (limit=8)\ → \start() cpu: 0\ → \SWEET CPU: cpu=0 entered initCPU mpidr=0x0 EL1 IRQs=1\ → 永久静默（无 panic 页）。
+- **静态判读（xnu/patches/0065、0078、0016 + OSS xnu-8796.141.3 osfmk/kern/processor.c processor_startup）**：master CPU 路径为 thread_bind(processor)+thread_block → cpu_start → initCPU；initCPU 内 signalCPU(this) 已用 ICC_SGI1R_EL1 排队自 SGI，随后仅 kprintf + initialized 已在 kprintf 处显示 IRQs=1，之后 startAll 的等待环 5s 必打 \NOT alive after 5s\ + panic \startup timeout\。两次 boot 均无该 panic → **超时分支没走到，等待线程或中断/时钟在本窗口 wedged**；这是 venus 上第一次静默 hang（此前所有失败都可见 panic/red-screen）。
+- **ADT CPU 节点审读 + 官方真值落地（commit 7ba38c6）**：cpus=1 只消费 cpu0 节点，其 reg=0/state=running/其余字段与 sweet 完全相同（apidr=0x0 即 MPIDR 实读，reg=0 匹配）→ **ADT 不是本次 hang 的直接原因**。但主线 linux sm8350.dtsi 给出 venus 真拓扑：cpu0-3=Cortex-A55（reg 0x0/0x100/0x200/0x300）、cpu4-6=A78（0x400-0x600）、cpu7=X1（0x700），Aff0 恒 0、核号在 Aff1 —— mkadt.py 的 reg=core<<8 布局恰好正确（0065 'Aff1 encodes the core'、0078 SweetCPU ≤0x700 + 低字节0 检查全兼容）。修改：仅 compatible（arm,cortex-a55/a78/x1|ARM,v8）与 clock-frequency（1804800000/2419200000/2841600000 = SM8350 公布最大频率，与 sweet 19.2MHz 时基口径同风格）。SMP（后续 cpus=8 + PSCI CPU_ON）前置就绪。
+- **本轮 boot 产物**：venus-adt.bin 12784B sha256 25500b05…f101；payload-venu0.bin 16,613,648B sha256 d603b578…9011（kernel 0082 14ccbd96 未动；官方整串 cmdline，cpus=1）；shim-boot-venus.img 17,293,312B sha256 31f5cf04…0188（v2 头 + vboot_dtb_04.dtb；unpack_bootv2 UNPACK-CMP-OK）。
+- **boot 预期与判读表**：①同 hang 静默 → 指向等待线程/中断路径 wedged（下一轮候选：initCPU boot CPU 改 0018 式 inline 等 SGI，或 dump DAIF/ICC 状态进 panic 前日志）；②出现 \NOT alive after 5s\/panic → SGI 未送达，GIC SGI 路径（结合 shim 探针 GICR_SGI priority 写外部中止 6e29ec1 记录）为主嫌；③过了 CPU init（出现 \came alive; SGI1 OK\ 及后续）→ 上轮为偶发/ADT 侧影响因素，往 cpus=2/8 推进。

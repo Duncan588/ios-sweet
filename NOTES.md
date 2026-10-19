@@ -2,6 +2,12 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19g SMP initCPU hang 分析 + venus ADT CPU 节点改官方 sm8350 真值（最先读这节） <<<
+
+- **现状（boot#0 画像，两次复现）**：0082 内核 + ADT 67dad381，官方整串 cmdline（cpus=1）。log：\SWEET CPU: requested=1 selected=1 (limit=8)\ → \start() cpu: 0\ → \cpu=0 entered initCPU mpidr=0x0 EL1 IRQs=1\ → 永久静默（无 5s 超时 panic，无 panic 页）。
+- **静态链路判读（0065/0078/0016 + OSS xnu-8796.141 processor.c）**：initCPU 里 signalCPU(this) 已用 ICC_SGI1R 排队自 SGI，kprintf 后仅写 initialized=1 返回；startAll 线程随后等 initialized && SIGPdisabled 清零，5 秒必打 \NOT alive after 5s\ + panic。**永久静默 = 5s 超时分支没走到** → 嫌疑集中在等待线程已 wedged / 中断或时钟在本窗口死掉，而非 ADT CPU 节点：cpus=1 只消费 cpu0 节点，其 reg=0/state=running 与sweet 相同（且 apidr=0x0 = MPIDR 实读，cpu0 节点 reg=0 匹配）。
+- **ADT CPU 节点官方真值落地（commit 7ba38c6）**：对照主线 linux sm8350.dtsi：cpu0-3 = Cortex-A55 reg 0x0/0x100/0x200/0x300、cpu4-6 = A78 0x400-0x600、cpu7 = X1 0x700，Aff0 恒 0、核号在 Aff1 —— mkadt.py 的 reg=core<<8 布局本来就对（0065 'Aff1 encodes the core' 和 0078 SweetCPU ≤0x700/低字节0检查全兼容）；本轮只改 compatible（arm,cortex-a55/a78/x1|ARM,v8）与 clock-frequency（1804800000/2419200000/2841600000，SM8350 公布最大频率）。SMP(cpus=8) 前置就此就绪；venus-adt.bin 新 sha256 25500b05…f101（12784B）。
+
 ### >>> UPDATE 2026-10-19f venus CNTP panic 根因判决 + 官方风格 patch 0082（最先读这节） <<<
 
 - **根因判决（静态三板斧，全在本机完成）**：
