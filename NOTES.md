@@ -2,7 +2,12 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-10-19 S1 攻坚完成 (最先读) <<<
+### >>> UPDATE 2026-10-19 S2.5 真机 xnu boot 尝试 (最先读) <<<
+
+- **SWEETXNU payload 已建成并真机 boot 过一次，结果：黑屏 + 设备双离线（fastboot/adb 都无输出），等待用户长按电源重启（只提醒一次）。** 链路：kernel `xnu/out/kernel.development.sweet`（CI run 39193640899，sha256 `de315bfa…f7dccf`，已对 SHA256SUMS 分毫不差）+ `shim/out/venus-adt.bin`（`c3dceb02…a1c3e1d`）→ `tools/mkpayload.py`（无 --ramdisk，cmdline `debug=0xc serial=3 keepsyms=1 -noprogress`）→ `shim/out/payload-venu0.bin`（16,610,928B，sha256 `65f3a115…f21b`，fixups=0 = CI 内核无 chained-fixup残留）；笔记本 build `shim/build.sh --venus 3`（v3 头，dtb 不打包属预期告警）→ `shim/out/shim-boot-venus.img`（16,805,888B，sha256 `80bea8af…b1b1`），`unpack_boot.py` 反验 ramdisk 与 payload 字节一致（UNPACK-CMP-OK）。笔记本 ~/ios-sweet-vp4 已 ff 到 b82f729（bundle 9a16744..b82f729；教训：02593d3..HEAD 的 bundle 会因笔记本缺基点而 fetch 失败，bundle 前先查对端 HEAD）。
+- **真机 boot 2026-10-19 13:19:37（临时 fastboot boot，无分区写入，slot b，max-download 768MB）：** 14s 内 Sending+OKAY 完成后设备离线 35s+，屏幕从 Windows/ssh 侧无法确证内容——若屏幕曾闪现 xnu console 或 panic 页请在恢复系统后告知。此结果是「未知失败」（可能是 ADT /product 节点缺失（两机均无 d22ap.adt，S3/S2.5 归属）导致 xnu 极早期 panic 且 console 未上屏，也可能是 shim loader 拷贝层问题），**不自动第二次**；下一次实验待主会话定（候选：strip 到最小 cmdline / QEMU 用 qemu-sweet.py 只验 loader→xnu 跳转前段 / 修 ADT /product）。
+
+### >>> UPDATE 2026-10-19 S1 攻坚完成 <<<
 
 **STATE: venus shim 探针真机点屏成功 = Stage 1 关账。**
 - v4（commit 链 7f77fe0→9a16744，venus-probe）：venus_probe_entry 首步用 `fdt_get_reg(dtb, "/reserved-memory/splash_region")`（fdt.c/fdt.h 新增公共 walk `fdt_walk_prop` + 6-cells BE 双 u64 解码，FDT_NOP 容忍）从 **ABL 传入的 DTB** 运行时读 splash_region；QHD 默认下沉 soc_venus.h（`VENUS_PANEL_QHD` 就地 define，VENUS_FB_BASE=0xE2A00000）；横扫 {DTB读到的base, +32MiB, 0x9C000000} 保留；10s delay + SYSTEM_OFF/RESET 尾段保留。
