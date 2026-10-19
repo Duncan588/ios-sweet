@@ -139,6 +139,19 @@ const char *loader_boot(uintptr_t dtb)
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	con_hex("JUMP", entry_pa);
 	con_str("XNU", "jumping (fbcon clears screen)");
+	/* S3 canary (real-device only): the last shim paint before the jump.
+	 * Screen after this point answers two questions:
+	 *   - if xnu's first kprintf wipes row 0 ("XNUNEXT" gone) -> xnu console
+	 *     hit the SAME framebuffer (good): death is later, keep reading;
+	 *   - if "JUMPXNU" lines are untouched for good -> xnu never drew
+	 *     (early data abort / died before its console init: check the
+	 *     boot_args Video below). These values are the ones xnu receives. */
+	con_hex2("JUMPXNU", "ba=", (uint32_t)p->virt_base, "vbase=", FB_BASE);
+	con_hex2("JUMPXNU", "pli=", (uint32_t)rd_start, "sz=", (uint32_t)(rd_end - rd_start));
+	/* CANARY2: redraw ON row 0 as the very last act, so xnu's earliest
+	 * console writes start at row 0 too and visibly overwrite it. */
+	con_reset_row();
+	con_str("XNUNEXT", "next writer is xnu kprintf on the same fb");
 
 	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
