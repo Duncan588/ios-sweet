@@ -85,10 +85,20 @@ const char *loader_boot(uintptr_t dtb)
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
-	const struct payload *p = (const struct payload *)rd_start;
-	if (!magic_ok(p->magic))
-		return "no SWEETXNU payload";
-	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
+	/* ABL prepends its own vendor ramdisk cpio before our payload, so the
+	 * magic is NOT at the first bytes: linear-scan the whole initrd for
+	 * "SWEETXNU". ~17 MiB at 4-byte stride is a few ms with the MMU off. */
+	const struct payload *p = 0;
+	uint64_t scanned;
+	for (scanned = 0; scanned + 8 <= rd_end - rd_start; scanned += 4)
+		if (magic_ok((const char *)(rd_start + scanned))) {
+			p = (const struct payload *)(rd_start + scanned);
+			break;
+		}
+	if (!p)
+		return "no SWEETXNU payload (scanned all of initrd)";
+	con_hex2("INITRD", "payload found at +0x", (uint32_t)scanned, "size 0x", (uint32_t)(rd_end - rd_start));
+	if (p->version != 1 || (p->adt_off & 7) || ((rd_start + scanned) & 7))
 		return "bad payload header";
 
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;	/* pa = va + this */
@@ -103,7 +113,7 @@ const char *loader_boot(uintptr_t dtb)
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = &p->segs[i];
 		uintptr_t dst = s->vmaddr + pa_of_va_base;
-		copy64(dst, rd_start + s->file_off, s->file_size);
+		copy64(dst, rd_start + scanned + s->file_off, s->file_size);
 		if (s->vmsize > s->file_size)
 			zero64(dst + ((s->file_size + 7) & ~7UL), s->vmsize - ((s->file_size + 7) & ~7UL));
 	}
@@ -111,7 +121,7 @@ const char *loader_boot(uintptr_t dtb)
 
 	/* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */
 	uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
-	copy64(adt_pa, rd_start + p->adt_off, p->adt_size);
+	copy64(adt_pa, rd_start + scanned + p->adt_off, p->adt_size);
 	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_16K - 1) & ~(PAGE_16K - 1);
 	uintptr_t top = ba_pa + PAGE_16K;
 

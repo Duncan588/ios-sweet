@@ -2,7 +2,19 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-10-19 S2.5 真机 xnu boot 尝试 (最先读) <<<
+### >>> UPDATE 2026-10-19 S5 initrd payload 区间扫描 (最先读) <<<
+
+- **S4 第一项进展：loader.c payload 定位改为区间扫描（venus-probe 分支，见本次 commit）**：用户实拍 milestone 5 屏证实 INITRD lo/hi 有效 + "no SWEETXNU payload" + UFS 分区清单全出 → 根因 = 小米 ABL 传的 initrd 是「vendor ramdisk cpio 拼接 payload」，payload magic `SWEETXNU` 不在首字节。修复：从 initrd 起始按 4 字节步进 linear scan magic（~17MB 几 ms，MMU off 无 TLB 问题），找到后打印 `INITRD payload found at +0x<off> (size 0x<n>)`，所有 payload 内 offset 语义（segs[].file_off、adt_off、头部对齐）全部改为 `rd_start + scanned + …`；找不到时打印 `no SWEETXNU payload (scanned all of initrd)` 走原 reset 路径，m5 勘探画面不变。已核对 shim/out/payload-venu0.bin 前 64B：`5357454554584e55 01000000 0a000000` = 字节 0 确为 magic，mkpayload 与 loader.c 的字面量同为 "SWEETXNU"。
+- **venus 下未改动的跳前步骤梳理（怀疑点备查，均不动）**：copy64 用 volatile 8 字节对 Device memory 的对齐拷（MMU off 1:1，与 S1 探针同路径已验证）；csel… virt_base 固定栈/ADT/boot_args 构造全部延续 sweet 逻辑，Video 走 console.h venus 宏（0xE2A00000/1440x3200，S3 已审）；唯一新疑点 = payload 在 initrd 内的 8 字节对齐（若 mkpayload 产物经 cpio 拼接后偏移非 8 对齐会报 "bad payload header"——里含 (rd_start+scanned)&7 检查，实测见屏）。
+- **真机 boot（venus_boot_probe.sh，payload 未重打）+ 观察对照表**：①`INITRD payload found` + `JUMP` + JUMPXNU 三行齐 → XNU 已跳，panic 文本即下一步情报；②只有 found 无 JUMP → loader 死在跳转前；③仍 no payload → ABL 拼接格式理解有误，下一步 dump initrd 首 64MB hex。**不二次 boot**。
+
+### >>> UPDATE 2026-10-19 S3 canary boot 已执行 <<<
+
+- **S3 = xnu 极早期死亡定位 boot（commit `e8af32e`，从 S2.5 的 b82f729 ff 而来）：跳转前 canary 已打进屏幕。boot_args 审查结论：loader.c 的 Video 全部走 console.h 宏（VENUS_PROBE 时 FB_BASE=0xE2A00000 / FB_W=1440 / FB_H=3200 / FB_STRIDE=5760，build.sh 对 loader.o 也传 -DVENUS_PROBE，已核实），Revision/Version=2、phys/virt/entry/cmdline 全来自 payload 头——没有 sweet 硬编码泄露进 venus boot_args，v_depth 沿用 sweet 已验证的 32，未做任何修改。**修改只有 loader.c 跳转前 13 行 canary（con_hex2 "JUMPXNU ba=/vbase=/pli=/sz=" + con_reset_row() 后 row0 打印 "XNUNEXT next writer is xnu kprintf on the same fb"）。
+- **真机 boot 2026-10-19 13:29:02（venus_boot_probe.sh，payload 未重打 = 原 65f3a115…f21b 16.6MB）**：fastboot OKAY 后 <45s 内 fastboot/adb 双离线（复现 S2.5），脚本未二次 boot。镜像 `shim-boot-venus.img` sha256 `95ed3ebb…62d3`（16,805,888B）。
+- **待用户肉眼判读屏幕（开机后勿关屏）**：紫色背景上应见 JUMP/JUMPXNU 等 shim 行 + 第 0 行（屏顶）"XNUNEXT..."。判读表见 docs/RESEARCH_LOG.md 第七次节点：①row0 被 xnu 白字覆写 → xnu console 通、死在后面（下一步抓 panic 文本）；②row0 仍是 XNUNEXT → xnu 死在自家 console 前（下一步查 .Stack/phys_base 或最小 cmdline）；③屏幕什么都不显示 → ABL→loader 拷贝层问题回查。
+
+### >>> UPDATE 2026-10-19 S2.5 真机 xnu boot 尝试 <<<
 
 - **SWEETXNU payload 已建成并真机 boot 过一次，结果：黑屏 + 设备双离线（fastboot/adb 都无输出），等待用户长按电源重启（只提醒一次）。** 链路：kernel `xnu/out/kernel.development.sweet`（CI run 39193640899，sha256 `de315bfa…f7dccf`，已对 SHA256SUMS 分毫不差）+ `shim/out/venus-adt.bin`（`c3dceb02…a1c3e1d`）→ `tools/mkpayload.py`（无 --ramdisk，cmdline `debug=0xc serial=3 keepsyms=1 -noprogress`）→ `shim/out/payload-venu0.bin`（16,610,928B，sha256 `65f3a115…f21b`，fixups=0 = CI 内核无 chained-fixup残留）；笔记本 build `shim/build.sh --venus 3`（v3 头，dtb 不打包属预期告警）→ `shim/out/shim-boot-venus.img`（16,805,888B，sha256 `80bea8af…b1b1`），`unpack_boot.py` 反验 ramdisk 与 payload 字节一致（UNPACK-CMP-OK）。笔记本 ~/ios-sweet-vp4 已 ff 到 b82f729（bundle 9a16744..b82f729；教训：02593d3..HEAD 的 bundle 会因笔记本缺基点而 fetch 失败，bundle 前先查对端 HEAD）。
 - **真机 boot 2026-10-19 13:19:37（临时 fastboot boot，无分区写入，slot b，max-download 768MB）：** 14s 内 Sending+OKAY 完成后设备离线 35s+，屏幕从 Windows/ssh 侧无法确证内容——若屏幕曾闪现 xnu console 或 panic 页请在恢复系统后告知。此结果是「未知失败」（可能是 ADT /product 节点缺失（两机均无 d22ap.adt，S3/S2.5 归属）导致 xnu 极早期 panic 且 console 未上屏，也可能是 shim loader 拷贝层问题），**不自动第二次**；下一次实验待主会话定（候选：strip 到最小 cmdline / QEMU 用 qemu-sweet.py 只验 loader→xnu 跳转前段 / 修 ADT /product）。
