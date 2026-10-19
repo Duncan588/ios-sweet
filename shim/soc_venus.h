@@ -82,5 +82,26 @@
  * MDP: ufshc@1d84000 reg = 0x1d84000/0x3000 (ufs_mem), 0x1d88000/0x8000 (ice),
  * 0x1d90000/0x9000 (ice_hwkm); IRQ SPI+0x109.  */
 
+/* ---- CPU bring-up constants (P-agent port from topaz 66ae4bf/f26e7a5) ----
+ * SM8350 layout (assets/NOTES, 2026-10-19): 4x silver cluster (Aff1=0),
+ * 3x gold (Aff1=1, Aff0=1..3 - gold0 Aff0=0 is the base core, no MPIDR 0x100),
+ * 1x prime (Aff1=2, Aff0=0). Boot CPU from ABL: silver0 MPIDR 0x0.
+ * mmio offsets per frame: GICR stride 0x20000 (shim.c GICR_PE_SIZE). */
+#define VENUS_NR_CPUS		8
+static const uint32_t venus_mpidrs[VENUS_NR_CPUS] = {
+	0x000, 0x001, 0x002, 0x003,		/* silver 0-3 */
+	0x101, 0x102, 0x103,			/* gold 1-3 (gold0 == 0x101? NO: see below) */
+	0x200					/* prime */
+};
+/* Correction note: Aff1=1 Aff0=1..3 -> MPIDR 0x101..0x103. MPIDR Aff0 field is
+ * bits 7:0, so 0x101 = Aff1=1, Aff0=1. Gold0 would be 0x100 but SM8350 gold
+ * cluster only has core0 as the base core at 0x100? Left at the documented
+ * venus truth: no 0x100 redistributor frame exists (3 gold cores total). */
+
+/* TODO(P-agent, speed probe): topaz (SM7150) gold cpufreq-hw freq-domain1 is
+ * 0x0f523000 (LUT +0x110, PERF_STATE +0x920). No verified SM8350 equivalent
+ * base is in the asset set, so NO cpufreq MMIO is done in the venus shim -
+ * only the tick-counting probe framework (venus_speed_probe in shim.c). */
+
 /* Probe banner string printed as "VENUS PROBE <string>". */
 #define VENUS_PROBE_TAG		"venus-sm8350"

@@ -221,6 +221,25 @@ static void __attribute__((unused)) test_smp(void)
 	uint64_t self = rsr("mpidr_el1") & 0xffffff;
 	int64_t ret[NR_CPUS];
 
+#ifdef VENUS_PROBE
+	/* venus (SM8350) real MPIDR layout: silver 0x0-0x3, gold 0x101-0x103,
+	 * prime 0x200 (soc_venus.h). The sweet formula (i << 8) would have
+	 * issued CPU_ON to non-existent 0x100/0x400.. frames. */
+	const uint64_t mpidr_of[NR_CPUS] = { 0, 1, 2, 3, 0x101, 0x102, 0x103,
+					     0x200 };
+	for (int i = 1; i < NR_CPUS; i++)
+		ret[i] = smc(PSCI_CPU_ON, mpidr_of[i], (uintptr_t)secondary_entry, i);
+	delay_ms(500);
+	for (int i = 1; i < NR_CPUS; i++) {
+		char label[] = "CPU0";
+		label[3] = '0' + i;
+		if (mpidr_of[i] == self)
+			con_str(label, "is boot cpu");
+		else
+			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
+				 (uint32_t)(sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000)));
+	}
+#else
 	for (int i = 1; i < NR_CPUS; i++)
 		ret[i] = smc(PSCI_CPU_ON, (uint64_t)i << 8, (uintptr_t)secondary_entry, i);
 	delay_ms(500);
@@ -233,6 +252,7 @@ static void __attribute__((unused)) test_smp(void)
 			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
 				 (uint32_t)sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000));
 	}
+#endif
 }
 
 /* ---- GIC + timer ---- */
@@ -380,6 +400,132 @@ static void test_gic(void)
 	wr32(r + GICR_ICENABLER0, 0xffffffff);
 	isb();
 }
+
+#ifdef VENUS_PROBE
+/* ---- venus port of topaz CPU bring-up (66ae4bf + f26e7a5) ----
+ * topaz evidence: xnu does not touch the redistributors of secondaries it
+ * CPU_ONs itself; without shim-side prepare a thread whose wakeup timer is
+ * armed on a secondary never wakes (topaz backboardd usleep() stall).
+ * Port differences for SM8350 (venus):
+ *   - GICR base 0x17a60000 / per-PE stride 0x20000 (shim.c constants).
+ *   - INTIDs are venus DT truth: VENUS_VTIMER_INTID(27) / PTIMER(30);
+ *     topaz used its own SoC values 19/18.
+ *   - IPRIORITYR writes are SKIPPED: on venus they external-abort
+ *     (2026-10-19: ESR 0x96000010, FAR/GICR_SGI+0x400 page; see test_gic()).
+ *   - Conservative scope per the port order: wake every redistributor +
+ *     Group1 + PPI enable (exactly what 66ae4bf landed on topaz). The shim
+ *     itself never issues xnu's CPU_ON; cpufreq MMIO is TODO (soc_venus.h).
+ */
+
+/* venus_find_gicr_aff: find_gicr for an arbitrary affinity field. The walk
+ * mirrors test_gic()'s frame scan so the boot-CPU behavior stays identical. */
+static uintptr_t venus_find_gicr_aff(uint32_t aff)
+{
+	for (uintptr_t off = 0; off < GICR_SIZE; off += GICR_PE_SIZE) {
+		uint64_t typer = rd64(GICR_BASE + off + GICR_TYPER);
+		if ((uint32_t)(typer >> 32) == aff)
+			return GICR_BASE + off;
+		if (typer & (1 << 4))	/* Last */
+			break;
+	}
+	return 0;
+}
+
+void venus_gicr_prepare_cpus(void)
+{
+	stage = "venus gicr prep";
+	for (int i = 0; i < VENUS_NR_CPUS; i++) {
+		uint32_t aff = venus_mpidrs[i];
+		uintptr_t r = venus_find_gicr_aff(aff);
+
+		if (!r) {
+			con_hex("GICR miss", aff);
+			continue;
+		}
+		/* Wake the redistributor for every PE (topaz gold_gicr_prepare
+		 * frame walk). Sleeping frame: write PROCESSOR only when awake
+		 * again; the field is self-clearing on GIC-600 once the PE is
+		 * reachable. We cannot wait Children_Asleep here because the
+		 * core itself is powered off out from under this shim. */
+		uint32_t waker = rd32(r + GICR_WAKER);
+		if (waker & 2) {
+			wr32(r + GICR_WAKER, waker & ~2U);
+			for (int k = 0; k < 100000 && (rd32(r + GICR_WAKER) & 4); k++)
+				;
+		}
+		/* IGROUPR0 + PPI ISENABLER0: same MMIO classes the venus boot
+		 * CPU's test_gic() already wrote fine on the live machine
+		 * (IGROUPR0 0x10080 page, ISENABLER0 0x10100). This is
+		 * 66ae4bf's exact final form minus its priority writes. */
+		wr32(r + GICR_IGROUPR0, 0xffffffff);
+		wr32(r + GICR_ISENABLER0,
+		     (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
+		/* topaz 66ae4bf also wrote IPRIORITYR 0xa0 x32; TODO: gate a
+		 * read-back-protected version before porting that MMIO class -
+		 * venus aborts on the 0x400 page today. */
+		con_hex2("GICR+", "aff=", aff, "en=", rd32(r + GICR_ISENABLER0));
+	}
+	con_hex2("GICRP", "prep=", VENUS_NR_CPUS, "vt=", VTIMER_INTID);
+}
+
+/* ---- core family identification (port order b): print only - no cross-
+ * CPU_ON, no register writes. Family is derived from the MPIDR Aff1 field,
+ * not from MIDR part numbers (SM8350 Kryo part IDs not in the asset set). */
+void venus_cpu_ident(void)
+{
+	uint32_t mpidr = (uint32_t)rsr("mpidr_el1");
+	const char *fam, *cls;
+
+	stage = "venus cpu ident";
+	con_hex2("MIDR", "el1=", (uint32_t)rsr("midr_el1"), "mpidr=", mpidr);
+	fam = "unknown";
+	cls = "aff1=?";
+	if (((mpidr >> 8) & 0xff) == 0) {
+		fam = "silver-cl";
+		cls = "aff1=0";
+	} else if (((mpidr >> 8) & 0xff) == 1) {
+		fam = "gold-cl";
+		cls = "aff1=1";
+	} else if (((mpidr >> 8) & 0xff) == 2) {
+		fam = "prime-cl";
+		cls = "aff1=2";
+	}
+	/* NOTE: sequential ifs, not a switch - a switch over these strings
+	 * materializes a pointer table in .data and trip-wires build.sh's
+	 * "no absolute relocations" freestanding check (6x R_AARCH64_ABS64). */
+	con_hex2(fam, "mpidr=", mpidr, 0, 0);
+	con_str("CLSFAM", cls);
+}
+
+/* ---- speed probe (port order c): loop-ticks framework only. The MMIO
+ * cpufreq-hw setup (topaz gold_cpufreq_max, freq-domain1 0x0f523000
+ * LUT/PERF_STATE) is topaz-SM7150-specific and is NOT ported - see the
+ * TODO in soc_venus.h. Signalling is pure CPU: I-cache-on dependent-add
+ * loop timed against CNTFRQ, identical to topaz speed_ticks(). */
+static uint64_t speed_ticks(void);
+
+void venus_speed_probe(void)
+{
+	uint64_t t = speed_ticks();
+
+	con_hex2("SPEED", "boot=", (uint32_t)t, "hz=", (uint32_t)rsr("cntfrq_el0"));
+}
+
+static uint64_t speed_ticks(void)
+{
+	uint64_t sctlr = rsr("sctlr_el1");
+
+	wsr("sctlr_el1", sctlr | (1UL << 12));	/* I-cache on (fine with MMU off) */
+	__asm__ volatile("isb");
+	uint64_t t = now(), x = 0;
+	for (uint64_t i = 0; i < 20000000; i++)
+		__asm__ volatile("add %0, %0, #1" : "+r"(x));
+	t = now() - t;
+	wsr("sctlr_el1", sctlr);
+	__asm__ volatile("isb");
+	return t;
+}
+#endif /* VENUS_PROBE */
 
 /* ---- main ---- */
 

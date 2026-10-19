@@ -130,6 +130,13 @@ int venus_probe_entry(uintptr_t dtb)
 	con_str("PSCI method", method[0] ? method : "absent in DTB (assuming smc)");
 	con_hex("PSCI ver", psci_call(dtb, PSCI_VERSION));
 
+	/* P-agent port (2026-10-19): topaz shim CPU bring-up line, tuned for
+	 * the probe screen: boot-core identification, 8x GICR wake + PPI
+	 * enable, tick probe. All read/print + shim-verified MMIO only. */
+	venus_cpu_ident();
+	venus_gicr_prepare_cpus();
+	venus_speed_probe();
+
 	/* Regions 1..n: same-size banner re-draw, no clear, base value shown. */
 	for (unsigned i = 1; i < FB_BASES_N; i++) {
 		con_fb = (volatile uint32_t *)fb_bases[i];
