@@ -1,0 +1,227 @@
+xnu: 0088 sweet probe post-firehose interval
+
+drill: 0088 sweet probe post-firehose interval
+
+Boot 17 on venus (commit 48c2062) goes silent between "Firehose
+configured: 16 chunks, 8 lo_pages" and "OSLog stream configured:
+stream: 8192 bytes, cache: 2112 bytes"; QEMU crosses the same window
+fine, so this is venus-platform specific.  Those two kprintfs are
+STARTUP(OSLOG, STARTUP_RANK_SECOND) entries, and the OSLOG-SECOND set
+is exactly {oslog_init_logmem, oslog_init_log_queues,
+oslog_init_firehose, oslog_init_msgbuf(XNUPOST), oslog_stream_init},
+so the silent death is inside one of them (printf already worked) or
+between their already-beaten statements.  This patch:
+- beats enter/exit of every OSLOG-SECOND entry (logmem, log queues,
+  msgbuf), and every substantial statement of oslog_stream_init
+  (clamps, blocks_count, lck_spin_init, the config print) and the tail
+  of oslog_init_firehose
+- samples DAIF and ISR_EL1 at the interval head and at stream exit to
+  tell apart an async-exception swallow (the 0086-style killer) from a
+  synchronous stall
+- masks IRQ/FIQ/SError/Debug right after the firehose print and
+  restores the saved DAIF verbatim in a new OSLOG RANK_FOURTH
+  sentinel, so the masked window is bounded and independent of the
+  qsort-unstable ordering of rank-2 entries.  A "survives the drill"
+  boot proves an async exception; a dead kernel still names the
+  killer via the missing beat.
+
+diff --git a/bsd/kern/subr_log.c b/bsd/kern/subr_log.c
+index 3ff7646..ef860c1 100644
+--- a/bsd/kern/subr_log.c
++++ b/bsd/kern/subr_log.c
+@@ -516,6 +516,9 @@ oslogioctl(__unused dev_t dev, u_long com, caddr_t data, __unused int flag, __un
+ 	return 0;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern uint64_t p0088_orig_daif;
++#endif
+ __startup_func
+ static void
+ oslog_init_firehose(void)
+@@ -548,8 +551,25 @@ oslog_init_firehose(void)
+ 
+ 	printf("Firehose configured: %u chunks, %u io pages\n",
+ 	    __firehose_buffer_kernel_chunk_count, __firehose_num_kernel_io_pages);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0088: last line ever seen on the venus board before the new
++	 * silent wall.  Sample the raw exception scene (DAIF + ISR_EL1),
++	 * then mask IRQ/FIQ/SError/Debug for the whole probed interval.
++	 * The restore is deferred to the OSLOG rank-4 sentinel at the end
++	 * of this file, which runs after every OSLOG rank-2 entry no
++	 * matter how qsort parked them. */
++	printf("P0088: oslog_init_firehose ret DAIF=0x%llx ISR=0x%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("DAIF"),
++	    (unsigned long long)__builtin_arm_rsr64("ISR_EL1"));
++	p0088_orig_daif = __builtin_arm_rsr64("DAIF");
++	__asm__ volatile("msr daifset, #0xf; dmb ish; isb" ::: "memory");
++	printf("P0088: oslog_init_firehose DAIF masked, probe window armed\n");
++#endif
+ }
+ STARTUP(OSLOG, STARTUP_RANK_SECOND, oslog_init_firehose);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++uint64_t p0088_orig_daif = 0xdead0000dead0000ULL;
++#endif
+ 
+ /*
+  * log_putc_locked
+@@ -854,12 +874,41 @@ __startup_func
+ static void
+ oslog_init_msgbuf(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_init_msgbuf enter DAIF=0x%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("DAIF"));
++#endif
+ 	size_t msgbuf_size = 0;
+ 
+ 	if (PE_parse_boot_argn("msgbuf", &msgbuf_size, sizeof(msgbuf_size))) {
+ 		(void) log_setsize(msgbuf_size);
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_init_msgbuf ret\n");
++#endif
+ }
+ STARTUP(OSLOG, STARTUP_RANK_SECOND, oslog_init_msgbuf);
+ 
+ #endif
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* 0088: runs at the tail of the OSLOG subsystem regardless of the
++ * (qsort-unstable) order of its rank-2 entries, so the DAIF state
++ * saved at the interval head is always restored, exactly once and
++ * bounded: this is the hardware tail of the probed interval. */
++__startup_func
++static void
++p0088_restore_daif(void)
++{
++	if (p0088_orig_daif == 0xdead0000dead0000ULL) {
++		return;
++	}
++	printf("P0088: probe sentinel DAIF=0x%llx restoring saved=0x%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("DAIF"),
++	    (unsigned long long)p0088_orig_daif);
++	__asm__ volatile("msr DAIF, %0; dmb ish" :: "r"(p0088_orig_daif) : "memory");
++	p0088_orig_daif = 0xdead0000dead0000ULL;
++	printf("P0088: probe sentinel restored DAIF, window closed\n");
++}
++STARTUP(OSLOG, STARTUP_RANK_FOURTH, p0088_restore_daif);
++#endif
+diff --git a/bsd/kern/subr_log_stream.c b/bsd/kern/subr_log_stream.c
+index e994afa..9ad42f9 100644
+--- a/bsd/kern/subr_log_stream.c
++++ b/bsd/kern/subr_log_stream.c
+@@ -1029,10 +1029,18 @@ oslog_streamclose(dev_t dev, __unused int flag, __unused int devtype, __unused s
+ 	return 0;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern uint64_t p0088_orig_daif;
++#endif
+ __startup_func
+ static void
+ oslog_stream_init(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_stream_init enter DAIF=0x%llx ISR=0x%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("DAIF"),
++	    (unsigned long long)__builtin_arm_rsr64("ISR_EL1"));
++#endif
+ 	if (os_log_disabled()) {
+ 		printf("OSLog stream disabled: Logging disabled by ATM\n");
+ 		return;
+@@ -1044,13 +1052,44 @@ oslog_stream_init(void)
+ 	log_stream_cache_size = MAX(log_stream_cache_size, LOG_CACHE_MIN_SIZE);
+ 	log_stream_cache_size = MIN(log_stream_cache_size, LOG_CACHE_MAX_SIZE);
+ 	log_stream_cache_size = MIN(log_stream_cache_size, log_stream_size / 2);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_stream_init clamps done size=%lu cache=%lu\n",
++	    log_stream_size, log_stream_cache_size);
++#endif
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_stream_init blocks_count pre\n");
++#endif
+ 	log_stream.ls_blk_count = blocks_count(log_stream_size);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_stream_init blocks_count post blk_count=%lu\n",
++	    (unsigned long)log_stream.ls_blk_count);
++#endif
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_stream_init lck_spin_init pre\n");
++#endif
+ 	lck_spin_init(&log_stream_si.lsi_lock, &log_stream_lock_grp,
+ 	    LCK_ATTR_NULL);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_stream_init lck_spin_init post\n");
++#endif
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_stream_init cfg print pre\n");
++#endif
+ 	printf("OSLog stream configured: stream: %lu bytes, cache: %lu bytes\n",
+ 	    log_stream_size, log_stream_cache_size);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* 0088: drill-convention exit: clear only the IRQ bit here; the
++	 * rank-4 sentinel in subr_log.c does the full DAIF restore. */
++	if (p0088_orig_daif != 0xdead0000dead0000ULL) {
++		__asm__ volatile("msr daifclr, #2; dmb ish" ::: "memory");
++	}
++	printf("P0088: oslog_stream_init ret DAIF=0x%llx ISR=0x%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("DAIF"),
++	    (unsigned long long)__builtin_arm_rsr64("ISR_EL1"));
++#endif
+ #ifdef LOG_STREAM_VERIFY
+ 	printf("OSLog stream verification: %d\n", log_stream_verify);
+ #endif /* LOG_STREAM_VERIFY */
+diff --git a/libkern/os/log.c b/libkern/os/log.c
+index 74d54c8..aa8e6be 100644
+--- a/libkern/os/log.c
++++ b/libkern/os/log.c
+@@ -116,6 +116,10 @@ __startup_func
+ static void
+ oslog_init_logmem(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_init_logmem enter DAIF=0x%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("DAIF"));
++#endif
+ 	if (os_log_disabled()) {
+ 		printf("Long logs support disabled: Logging disabled by ATM\n");
+ 		return;
+@@ -133,6 +137,9 @@ oslog_init_logmem(void)
+ 	} else {
+ 		printf("Long logs support disabled: Not enough memory\n");
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_init_logmem ret\n");
++#endif
+ }
+ STARTUP(OSLOG, STARTUP_RANK_SECOND, oslog_init_logmem);
+ 
+diff --git a/libkern/os/log_queue.c b/libkern/os/log_queue.c
+index aebbfc9..606095c 100644
+--- a/libkern/os/log_queue.c
++++ b/libkern/os/log_queue.c
+@@ -641,6 +641,10 @@ __startup_func
+ static void
+ oslog_init_log_queues(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_init_log_queues enter DAIF=0x%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("DAIF"));
++#endif
+ 	if (os_log_disabled()) {
+ 		printf("Log queues disabled: Logging disabled by ATM\n");
+ 		return;
+@@ -674,6 +678,9 @@ oslog_init_log_queues(void)
+ 	printf("Log queues configured: slot count: %u, per-slot size: %u, total size: %u\n",
+ 	    slot_count, (1 << lq_bootarg_size_order),
+ 	    slot_count * (1 << lq_bootarg_size_order));
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0088: oslog_init_log_queues ret\n");
++#endif
+ }
+ STARTUP(OSLOG, STARTUP_RANK_SECOND, oslog_init_log_queues);
+ 
