@@ -15,7 +15,13 @@
 #include "venus_probe.h"
 #endif
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
+#define IMEM_RESTART_REASON	0x146aa65cUL	/* sweet qcom,msm-imem restart_reason@65c */
+#ifdef VENUS_PROBE
+/* venus (SM8350) ABL DTB: qcom,msm-imem@146bf000, restart_reason@65c.
+ * Writing sweet's 0x146aa65c there was a sync external abort (ESR 0x96000010,
+ * ELR inside reset(), FAR=X0=0x146aa65c) - this address is the fix. */
+#define IMEM_RESTART_REASON_VENUS	0x146bf65cUL
+#endif
 #define RESTART_BOOTLOADER	0x77665500U
 #define PSHOLD			0x0c264000UL
 
@@ -115,7 +121,14 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
+#ifdef VENUS_PROBE
+	/* Put the reason on the screen before any IMEM access can kill us. */
+	con_hex2("RSTREASON", "imem=", (uint32_t)IMEM_RESTART_REASON_VENUS,
+		 "val=", RESTART_BOOTLOADER);
+	wr32(IMEM_RESTART_REASON_VENUS, RESTART_BOOTLOADER);
+#else
 	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
+#endif
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
 	wr32(PSHOLD, 0);
@@ -167,7 +180,17 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	con_hex("X0", regs[0]);
 	con_hex("X1", regs[1]);
 	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
+#ifdef VENUS_PROBE
+	/* reset() here painted the SAME blue screen again ~40 s later (its IMEM
+	 * write / next abort over this dump), so the real (first) exception's
+	 * ELR/FAR was lost on every boot (2026-10-19 photos). Keep the screen -
+	 * it is the only log channel on venus - and never auto-reset here. */
+	con_str("HOLD", "exception screen stays (no auto reset)");
+	for (;;)
+		__asm__ volatile("wfe");
+#else
 	reset(40);
+#endif
 }
 
 /* ---- SMP ---- */

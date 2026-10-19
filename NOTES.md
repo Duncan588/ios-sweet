@@ -2,6 +2,12 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19 venus 蓝屏根因 = reset() 写 sweet 的 IMEM 地址（最先读）<<<
+
+- **反汇编裁决（shim.elf VMA=0 基，Image 装在 0xA0080000）**：ELR 0xA0081938 = `reset.constprop.0+0x74` 的 `str w1,[x0]`（x0=0x146aa65c，w1=0x77665500），LR 0x18e4 = 该函数里 con_str("RESET","in 40s") 返回点。**用户实拍的蓝屏是第二次异常**：第一次异常（真凶，ELR 在 loader 阶段，值已丢失）→ exc_handler 画蓝 dump → reset(40) 倒计时完 → 写 0x146aa65c → venus(SM8350) 上同步 external abort → 第二次异常再次画蓝覆盖第一张 → 死循环（每 ~40s 循环一次重画）。X0/X1=FAR=0x146AA65c 组合即 wr32(IMEM_RESTART_REASON,x) 形态。
+- **修复（本次 commit，shim/)：①shim.c 新增 `IMEM_RESTART_REASON_VENUS=0x146bf65c`**（venus ABL DTB：qcom,msm-imem@146bf000 + restart_reason@65c，来自 E:\Hackios\Xiaomi11\out\vboot_dtb_04..06.dts），reset() 在 VENUS_PROBE 下写该地址并在写前 con_hex2("RSTREASON")；**② exc_handler 在 VENUS_PROBE 下 dump 完 HOLD（WFE 循环）不再 reset**——下一张蓝屏就是第一现场，根因证据不再被覆盖；③ loader.c payload 头 deref 前加固（version==1、nsegs 1..16、mem_size/kernel_end <0xC0000000 且非 0、phys/virt/entry 非 0、对齐），拒绝 vendor cpio 里的假 SWEETXNU 命中。sweet 默认构建不变（改动全在 #ifdef VENUS_PROBE / 加固区间）。
+- **真机观察对照表（下一 boot）**：① 蓝屏一次后**不消失**（HOLD 行可见）→ 迟到 → 见丑屏第一现场到手的根因是 loader 扫描段异常（报 ELR/FAR 进 loader_boot）；② 见 INITRD "payload found at +0x…" + JUMP/JUMPXNU → 扫描活了，后续看 xnu；③ 见 "bad payload header" → 假命中被拒（好事，需加密 dump 找真实 magic 位置）；④ 仍见 RESET-like 蓝屏循环 → 我改错方向，报屏上 ELR/FAR 重启调查。
+
 ### >>> UPDATE 2026-10-19 S5 initrd payload 区间扫描 (最先读) <<<
 
 - **S4 第一项进展：loader.c payload 定位改为区间扫描（venus-probe 分支，见本次 commit）**：用户实拍 milestone 5 屏证实 INITRD lo/hi 有效 + "no SWEETXNU payload" + UFS 分区清单全出 → 根因 = 小米 ABL 传的 initrd 是「vendor ramdisk cpio 拼接 payload」，payload magic `SWEETXNU` 不在首字节。修复：从 initrd 起始按 4 字节步进 linear scan magic（~17MB 几 ms，MMU off 无 TLB 问题），找到后打印 `INITRD payload found at +0x<off> (size 0x<n>)`，所有 payload 内 offset 语义（segs[].file_off、adt_off、头部对齐）全部改为 `rd_start + scanned + …`；找不到时打印 `no SWEETXNU payload (scanned all of initrd)` 走原 reset 路径，m5 勘探画面不变。已核对 shim/out/payload-venu0.bin 前 64B：`5357454554584e55 01000000 0a000000` = 字节 0 确为 magic，mkpayload 与 loader.c 的字面量同为 "SWEETXNU"。
