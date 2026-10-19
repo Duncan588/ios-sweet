@@ -12,7 +12,8 @@
 - `handshake structure not initialized` 出处：`osfmk/kdp/output_stages/out_shmem.c`（KDP out_shmem printf 阶段，良性日志行，非第二 fault）。判定为否定后一条路。
 - **修复 = 官方风格新 patch `xnu/patches/0082-sweet-no-ptimer-ctl-write.patch`**：`#if defined(SWEET)` 包住 CNTP 预防写（SWEET 下只留注释说明），非 SWEET 语义不变。编号顺延在 0081 之后；风格对齐 0017。已在干净 OSS machine_routines.c 上 `git apply --check` 通过（0008 只碰同文件 2164 附近不同函数，无冲突）。
 - 本地 xnu-cc.py 单文件编译不可用（Windows 无 ~/swift clang 与 buildtree），编译验证由 CI 全量构建承担（keep_going）。
-- **B 代理 boot 说明**：CI 新内核落地 `xnu/out/0082/`（不动 xnu/out 现货），re-payload 仍 `tools/mkpayload.py xnu/out/0082/kernel.development.sweet …` 老命令不变；boot_args/ADT 不变。
+- **CI DONE（run `39219361131`，ref venus-probe@f072598，7m30s success）**：新内核 `xnu/out/0082/kernel.development.sweet`，sha256 `14ccbd96cac70ae53f8e37798bb4e9ec389a7f6485d652ebd2bdfe36e80ae97f`（与 CI SHA256SUMS 一致）。二进制复核：全内核 arch-timer sysreg 仅剩 4 条 CNTV 访问（TVAL/CTL），**CNTP 访问清零**。revert 基线 = 旧内核 de315bfa…（xnu/out 原货未动）。
+- **B 代理 boot 说明**：re-payload 仍 `python3 tools/mkpayload.py xnu/out/0082/kernel.development.sweet shim/out/venus-adt.bin shim/out/payload-venu0.bin --cmdline 'debug=0xc serial=3 keepsyms=1 -noprogress'` → `bash build.sh --venus 2 shim/out/payload-venu0.bin`（venus_boot_probe.sh 老流程不变）；ADT/boot_args 不变。预期：不再打 `Undefined kernel instruction` CNTP panic；若再 panic 拍屏即下一情报。
 
 ### >>> UPDATE 2026-10-19e d22ap.adt 官方路线提取，/product 补齐（venus-adt.bin 已重打）（最先读这节） <<<
 
