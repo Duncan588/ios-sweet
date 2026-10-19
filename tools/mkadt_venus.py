@@ -98,6 +98,16 @@ def build():
     set_prop(chosen, 'system-firmware-version', mkadt.cstr('venus-' + stem))
 
     arm_io = next(c for c in root.children if c.name == 'arm-io')
+    # Architected-timer PPI: mkadt.py hardcodes the SM7150 (sweet) value 19,
+    # which is phone-verified on sweet (NOTES 19d-f) but NOT the SM8350 truth:
+    # SM8350 uses the canonical GICv3 PPI assignment (vtimer INTID 27,
+    # ns-phys 30, secure 29, hyp 28) per the sm8350.dtsi GIC_PPI table and the
+    # S2-verified device truth. Patch 0017 reads virtual-timer-intid from this
+    # node; with 19 the kernel enables/dispatches the wrong PPI and no timer
+    # interrupt ever fires after IRQ enable -> every tick-waiting boot thread
+    # stalls silently (the observed 0082 "entered initCPU -> silence" hang).
+    gic = next(c for c in arm_io.children if c.name == 'gic')
+    set_prop(gic, 'virtual-timer-intid', mkadt.u32(27))
     set_prop(arm_io, 'device_type', mkadt.cstr('venus-io'))
     set_prop(arm_io, 'compatible', mkadt.cstr('venus-io') + mkadt.cstr('arm-io'))
     disp0 = next(c for c in arm_io.children if c.name == 'disp0')

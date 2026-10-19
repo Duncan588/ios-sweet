@@ -2,7 +2,45 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-10-19g SMP initCPU hang 分析 + venus ADT CPU 节点改官方 sm8350 真值（最先读这节） <<<
+### >>> UPDATE 2026-10-19h initCPU 静默 hang 真因判决：venus ADT vtimer INTID 19→27（最先读这节） <<<
+
+- **官方 qemu 基线对照（最硬证据）**：官方 `python tools/mkadt.py shim/out/qemu-adt-ref.bin --qemu` 生成官方 qemu ADT（官方 tools/qemu-sweet.py 用它跑通同一内核），与 mkadt_venus.py 重打的 venus ADT 逐节点 diff（一次性脚本 `shim/out/adt_diff.py`，路径+全属性对比，kdump 级）。**结果：逐节点结构完全同构；唯一功能相关差异 = `/arm-io/gic virtual-timer-intid`：qemu=27（0x1b），venus=19（0x13，mkadt.py 硬编码的 SM7150 sweet 已验证值被 venus 继承）**；其余 diff 全属 venus-by-design（RAM banks、1440x3200 canvas、cortex-a55/a78/x1 compatible/frequency、qcom,sm8350/xiaomi,venus compatible、多出 memory/cpu1-7/ufs 节点）。GICD 0x17A00000+64K、GICR 0x17A60000+0x100000（stride 0x20000 × 8 恰好 1MB）、timebase 19.2MHz、CPU 节点 reg/state 等逐字段一致。
+- **内核侧消费路径（xnu/patches/0017 + OSS xnu-8796.141.3 pe_fiq.c/sleh.c）**：0017 在 GIC init 从该节点读 `virtual-timer-intid`（缺省 19），之后 GICR_ISENABLER0 只 enable `(1<<intid)|(1<<SGI1)`，sleh.c 按同一 intid 分派 timer 中断——venus ADT 的 19 使能/dispatch 的是不存在于 SM8350 的 PPI，vtimer（真值 27，主会话判定：vtimer 27/ptimer 30/hv 28/secure 29）中断永远不进。**IRQ 使能后所有靠 tick 的等待（IOSleep/线程 wake/超时轮询）永远睡死** → 系统在 CPU bring-up 打印后全面冻结、5s 超时分支永不执行、无 panic 无新行 = 静默 wedged。判定为本次 hang 真因。
+- **两处 boot 早期报错确认为良性噪音（qemu 同样打印）**：`pe_arm_map_interrupt_controller: failed to find the interrupt-controller`出自 OSS pe_identify_machine.c:543（查 `SecureDTFindEntry("interrupt-controller","master")+reg`，qemu/venus ADT 都没有该形式节点，qemu-sweet 全流程照样跑通）；`pe_arm_init_debug: failed to find cpu-debug-interface`出自同文件 :515（panic-trace TUNABLE_DT 检索 cpu-debug-interface 节点，缺失即 kprintf，非致命）。二者不需修；如要对照，官方 qemu-sweet.py run log 应有同样两行。
+- **本轮修复 = 仅 tools/mkadt_venus.py 把 /arm-io/gic virtual-timer-intid 设为 27（venus 真值），内核零改动**：0017 从 ADT 读值的设计免 patch、免 CI（复用 0082 内核 sha256 `14ccbd96cac70ae53f8e37798bb4e9ec389a7f6485d652ebd2bdfe36e80ae97f`，CI run 39219361131 绿）。
+- **venus-adt.bin 新 sha256 = `3cc39d33f42dcda76ec3604197e28a762046de0b32e475f1d9acd09db28252`（12784B）**；旧 25500b05…f101（仅 CPU 节点版）与 67dad381…（/product 版）作废。下 boot 预期 log：`SWEET GIC: virtual timer INTID 27`；若仍静默 ≥1 分钟，下一候选转 SGI/ICC 路径或 driver wake。
+- 主会话重建命令（ADT 已由本代理重打就位；Windows→笔记本旧通道）：
+  ```
+  # 本代理已执行（Windows）：
+  python tools/mkadt_venus.py shim/out/venus-adt.bin
+  # 主会话/笔记本侧（重打 payload + v2 boot.img，照 19f Boround 流程发射）：
+  python3 tools/mkpayload.py xnu/out/0082/kernel.development.sweet shim/out/venus-adt.bin shim/out/payload-venu0.bin --cmdline 'debug=0xc serial=3 keepsyms=1 -noprogress rd=ufsroot0 ufsrw=1 rootrw=1 cpus=1'
+  bash shim/build.sh --venus 2 out/payload-venu0.bin
+  tools/venus_boot_probe.sh
+  # 判读：绿灯 = 出现 "virtual timer INTID 27" 且 boot 沿 CPU bring-up 之后继续走；
+  #       红灯 = 同位置仍静默 → 报主会话，转 SGI/driver wake 路径调查。
+  ```
+
+### >>> UPDATE 2026-10-19g SMP initCPU hang 分析 + venus ADT CPU 节点改官方 sm8350 真值（已由 19h 判决盖案） <<<
+
+- **官方 qemu 基线对照（最硬证据）**：官方 `python tools/mkadt.py shim/out/qemu-adt-ref.bin --qemu` 生成官方 qemu ADT（官方 tools/qemu-sweet.py 用它跑通同一内核），与 `shim/out/venus-adt-check.bin`（mkadt_venus.py 重打）逐节点 diff（一次性脚本 `shim/out/adt_diff.py`，strconv 全字段）。**结果：逐节点结构完全同构，唯一功能相关差异 = `/arm-io/gic virtual-timer-intid`：qemu=27（0x1b，官方-approved 路线），venus=19（0x13，mkadt.py 硬编码 SM7150 sweet 已验证值被 venus 继承）**；其余 diff 为 venus-by-design（RAM banks、1440x3200 canvas、cortex-a55/a78/x1 compatible/freq、qcom,sm8350/xiaomi,venus compatible、extra memory/cpu1-7/ufs 节点）。GICD/GICR reg、size、str饿、timebase 19.2MHz、CPU 节点全部理解二进制一致。
+- **内核动静路径（0017 patch + OSS xnu-8796.141.3 pe_identify_machine.c/pe_fiq.c）**：patch 0017 在 GIC init 读 `/arm-io/gic virtual-timer-intid`（缺省19），SWEET 下 GICR_ISENABLER0 只 enable `(1<<intid)|(1<<SGI1)`，sleh.c 按同一 intid 分派 timer——两处全部被 **venus ADT 现值 19** 错锁。venus/SM8350 vtimer 真值 27（vtimer 27/ptimer 30/hv 28/secure 29，主会话判定 + arm GICv3 架构 PPI 表一致）。→ vtimer 中断使能/dispatch 落到不存在的 PPI，**任何靠 tick 的等待远离（IOSleep/线程 wake）永远睡** → boot 后 IOKit/scheduler 线程全部冻结，5s 启动超时分支永远不执行，系统无 panic 无新行=静默 wedged。**这就是第十三次真因**。
+- **两处已确认良性红鰏 noise（qemu 同样打印，非真因）**：`pe_arm_map_interrupt_controller: failed to find the interrupt-controller`出自 pe_identify_machine.c:543（`SecureDTFindEntry("interrupt-controller", "master")`，qemu/venus ADT 都无该形式节点，qemu-sweet 全流程跑通证明非致命）；`pe_arm_init_debug: failed to find cpu-debug-interface`出自同文件 515（TUNABLE_DT 其检索 cpu-debug-interface 节点缺失，同上）。ACCESS 对照真伪需 qemu boot log，无需修。
+- **本轮修复 = mkadt_venus.py 改 /arm-io/gic virtual-timer-intid = 27（venus 真值），不动内核**：patch 0017 从 ADT 读值的设计正好免 patch，无需 CI（0082 内核 14ccbd96 绿已复用）。半器重新验算：set 后 venus ADT intid=27、GICD 0x17A00000+64K/GICR 0x17A60000+0x100000（stride 0x20000 × 8 CPU 采够）已对齐 venus 真值。
+- **venus-adt.bin 新 sha256 = `3cc39d33f42dcda76ec3604197e28a762046de0b32e475f1d9acd09db28252`（12784B）**；旧 25500b05…f101（仅 CPU 节点版）作废。vimer 理论：`SWEET GIC: virtual timer INTID 27` 应出现在下 boot log；如仍静默（≥1 分钟），下一候选转向 SGI/ICC 路径（boot#D+）。
+- 主会话重建命令（Windows 侧 ADT 已就位，本代理零真机操作）：
+  ```
+  # 已由本代理执行：
+  python tools/mkadt_venus.py shim/out/venus-adt.bin        # 新 ADT 3cc39d33…252
+  # 主会话/笔记本侧（重打 payload + boot.img，发射）：
+  python3 tools/mkpayload.py xnu/out/0082/kernel.development.sweet shim/out/venus-adt.bin shim/out/payload-venu0.bin --cmdline 'debug=0xc serial=3 keepsyms=1 -noprogress rd=ufsroot0 ufsrw=1 rootrw=1 cpus=1'
+  bash shim/build.sh --venus 2 out/payload-venu0.bin
+  # 发射照老流程（venus_boot_probe.sh / fastboot boot），观测窗：
+  #   绿灯 = SWEET GIC: virtual timer INTID 27 + boot 继续走（I/O Kit 尾段赱 / mount root panic 答）
+  #   红灯 = 仍静默 → 报屏/无新行，下一轮转 SGI/driver wake 路径
+  ```
+
+### >>> UPDATE 2026-10-19g SMP initCPU hang 分析 + venus ADT CPU 节点改官方 sm8350 真值（已由 19h 盖章） <<<
 
 - **现状（boot#0 画像，两次复现）**：0082 内核 + ADT 67dad381，官方整串 cmdline（cpus=1）。log：\SWEET CPU: requested=1 selected=1 (limit=8)\ → \start() cpu: 0\ → \cpu=0 entered initCPU mpidr=0x0 EL1 IRQs=1\ → 永久静默（无 5s 超时 panic，无 panic 页）。
 - **静态链路判读（0065/0078/0016 + OSS xnu-8796.141 processor.c）**：initCPU 里 signalCPU(this) 已用 ICC_SGI1R 排队自 SGI，kprintf 后仅写 initialized=1 返回；startAll 线程随后等 initialized && SIGPdisabled 清零，5 秒必打 \NOT alive after 5s\ + panic。**永久静默 = 5s 超时分支没走到** → 嫌疑集中在等待线程已 wedged / 中断或时钟在本窗口死掉，而非 ADT CPU 节点：cpus=1 只消费 cpu0 节点，其 reg=0/state=running 与sweet 相同（且 apidr=0x0 = MPIDR 实读，cpu0 节点 reg=0 匹配）。
