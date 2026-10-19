@@ -1,0 +1,37 @@
+xnu: 0087 sweet startall daif drill
+
+drill: 0087 sweet startall daif drill
+
+The 0086 marker beats print on the first processor_start but the
+second call still dies between the "P0084 ... reason=1" beat and the
+0086 pre beat, i.e. before the in-function mask was armed. Move the
+exception mask to the caller: SweetCPU::startAll masks IRQ/FIQ/
+SError/Debug right before the processor_start() call and unmasks after
+(if it ever returns). Evidence matrix:
+- "DAIF masked, entering" prints but the deeper nails still stop at
+  reason=1   -> the second call dies fully masked: not an async
+               exception; suspect the kprintf/console path next
+- deeper nails (P0086 pre) now print -> async exception confirmed,
+  because the mask was the thing that changed the outcome
+- boot passes the call entirely -> solved, unmask and walk on
+
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -168,4 +168,14 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 		kprintf("P0084: startAll: cpu=%u before processor_start\n", i);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* 0087: the 0086 mask inside processor.c was armed micro-
++		 * seconds before the death and never printed on the second
++		 * call. Block every exception already at the caller and
++		 * unmask only when the call itself returns. */
++		__asm__ volatile("msr daifset, #0xf; dmb ish; isb" ::: "memory");
++		kprintf("P0087: startAll: cpu=%u DAIF masked, entering processor_start\n", i);
++#endif
+ 		kern_return_t kr = processor_start(cpu->machProcessor);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		kprintf("P0087: startAll: cpu=%u processor_start returned kr=%d\n", i, (int)kr);
++		__asm__ volatile("msr daifclr, #0xf; dmb ish" ::: "memory");
++#endif
+ 		if (kr != KERN_SUCCESS) {
+
