@@ -22,7 +22,7 @@ diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
 index 7254b06..008600a 100644
 --- a/osfmk/kern/processor.c
 +++ b/osfmk/kern/processor.c
-@@ -806,7 +806,28 @@ processor_startup(
+@@ -806,7 +806,29 @@ processor_startup(
  		kprintf("P0084: processor_startup master cpu=%d reason=%d\n",
  		    processor->cpu_id, reason);
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
