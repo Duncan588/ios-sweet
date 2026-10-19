@@ -144,6 +144,8 @@ Xiaomi/Qualcomm ABL（解锁 BL，boot v2）
 - 【实验流程约定】Windows: \git bundle create E:\\Hackios\\vp6.bundle d95da3f..venus-probe\ → scp 到 notebook:~/ → 笔记本 \git -C ~/ios-sweet-vp4 fetch ~/vp6.bundle HEAD:vp6 && git merge --ff-only vp6\ → \cd ~/ios-sweet-vp4/shim && bash build.sh --venus 3 qhd\ → \ash tools/venus_boot_probe.sh shim/out/shim-boot-venus.img\（fastboot devices 无输出即停，等用户再重启手机）。
 - 【用户观察口径（下一次 boot）】~10s 后自动关机=v3 全链成功 / 自动重启=SYSTEM_OFF 被拒转 RESET / 屏幕闪出蓝色屏+文字=某候选基址命中（记录哪个 base 行）。
 
+- 【S2 mkadt_venus（commit 02593d3, venus-probe）】`tools/mkadt_venus.py` 复用 mkadt.py：/memory reg=三 bank、/chosen dram-base/size=首 bank(0x80000000/0x37500000)、disp0/fbcon 1440x3200、身份 D22AP+0x8015（ADR-0007）、**random-seed 固定为 bytes(range(64))**（跨机 byte-identical）；产物 `shim/out/venus-adt.bin` 10056B，sha256 Win/Linux c3dceb02c0616e89c25d1d2428bdb65eb2d0d125dde6a38245b48819fa1c3e1d（notebook `python3 tools/mkadt_venus.py` 复算一致）。已知：/product 节点缺失——两台机都没有 research/ipsw-x/d22ap.adt（Apple 工件，git 外），出表征即补。下一站：把 venus ADT+kernel 走 qemu-sweet.py loader 路径冒烟。
+
 ## 2026-10-19（第五次）─ venus probe v4（FB 基址运行时从 DTB 读取 ─ 活机 splash_region 证据）
 
 - 【根因 [CONFIRMED-活机]】三次黑屏的原因是我们的 shim 画到了错误地址：静态 vendor_boot SoC DTB 的 `/reserved-memory/splash_region reg = 0xEA600000` 已被活机数据否定。活机 Linux 运行时 DT（内核 fdt，fdt_idx=4/dtbo_idx=46，model "Venus based on ... SM8350"，QHD 1440x3200 cmd 面板）导出为 `fdt_live.bin`，用 `Xiaomi11/tools/fdt_min.py` 解析得 **splash_region = base 0xE2A00000 size 0x2300000**。台账保留两点：(1) 静态 SoC DTB 值 0xEA600000 是 bootloader 未覆盖时的残留档；(2) ABL fastboot boot 时会给 shim 传自己的 DTB（x0），解析需自适应其值（v4 即为此设计）。工具说明：`dtb_nodes.py` 是早期手写解析器，对 NOP tag/嵌套跳动容忍不足（活机 DT 中有 FDT_NOP），已被 `fdt_min.py`（Xiaomi11/tools/，临时产物，不入 git）取代。
