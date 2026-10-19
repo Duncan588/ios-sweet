@@ -18,7 +18,7 @@
   tools/venus_boot_probe.sh shim/out/shim-boot-venus.img
   ```
   `sweetcpudbg=1` 可去掉（去噪二轮）；ADT 不变（INTID 27 版 3cc39d33…）。
-- CI run 39229150705（ref venus-probe@730634a）；产物 xnu/out/0083/kernel.development.sweet。官方 patch 未动。
+- CI run **39229150705**（ref venus-probe@730634a，8m30s success）；产物 `xnu/out-0083/kernel.development.sweet` sha256 **`1895b4c28d5ad55628c0bf7a728626ed914be27d09d9f14f289b7616925863f4`**（与 CI SHA256SUMS 一致）。payload 已重打（官方 17 参数 + sweetcpudbg=1）：`shim/out/payload-venu0.bin` 16,613,648B sha256 `a35ffb3f75f7b25fdb3115f55160fc45293a79cceb8ed6dee1e8daffdd1ff5fd`（ADT 未变）。官方 patch 未动。
 
 - **官方 qemu 基线对照（最硬证据）**：官方 `python tools/mkadt.py shim/out/qemu-adt-ref.bin --qemu` 生成官方 qemu ADT（官方 tools/qemu-sweet.py 用它跑通同一内核），与 mkadt_venus.py 重打的 venus ADT 逐节点 diff（一次性脚本 `shim/out/adt_diff.py`，路径+全属性对比，kdump 级）。**结果：逐节点结构完全同构；唯一功能相关差异 = `/arm-io/gic virtual-timer-intid`：qemu=27（0x1b），venus=19（0x13，mkadt.py 硬编码的 SM7150 sweet 已验证值被 venus 继承）**；其余 diff 全属 venus-by-design（RAM banks、1440x3200 canvas、cortex-a55/a78/x1 compatible/frequency、qcom,sm8350/xiaomi,venus compatible、多出 memory/cpu1-7/ufs 节点）。GICD 0x17A00000+64K、GICR 0x17A60000+0x100000（stride 0x20000 × 8 恰好 1MB）、timebase 19.2MHz、CPU 节点 reg/state 等逐字段一致。
 - **内核侧消费路径（xnu/patches/0017 + OSS xnu-8796.141.3 pe_fiq.c/sleh.c）**：0017 在 GIC init 从该节点读 `virtual-timer-intid`（缺省 19），之后 GICR_ISENABLER0 只 enable `(1<<intid)|(1<<SGI1)`，sleh.c 按同一 intid 分派 timer 中断——venus ADT 的 19 使能/dispatch 的是不存在于 SM8350 的 PPI，vtimer（真值 27，主会话判定：vtimer 27/ptimer 30/hv 28/secure 29）中断永远不进。**IRQ 使能后所有靠 tick 的等待（IOSleep/线程 wake/超时轮询）永远睡死** → 系统在 CPU bring-up 打印后全面冻结、5s 超时分支永不执行、无 panic 无新行 = 静默 wedged。判定为本次 hang 真因。
