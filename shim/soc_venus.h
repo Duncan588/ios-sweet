@@ -14,17 +14,31 @@
  */
 #include <stdint.h>
 
-/* /reserved-memory/splash_region reg = 0xEA600000 size 0x2300000, label
- * "cont_splash_region" — ABL's framebuffers live here at boot. */
-#define VENUS_FB_BASE		0xEA600000UL
+/* /reserved-memory/splash_region reg. REPLACED 2026-10-19 by the live-host
+ * value: Linux runtime DT (fdt_live.bin, dtb_idx=4/dtbo_idx=46) shows
+ * base 0xE2A00000 size 0x2300000 — the static vendor_boot SoC DTB value
+ * 0xEA600000 ("cont_splash_region") is disproved as the live framebuffer
+ * location and was the root cause of three consecutive black screens.
+ * On real boot ABL hands the shim its own DTB in x0; shim/venus_probe.c
+ * reads this path from it at runtime and only falls back to this constant
+ * when /reserved-memory/splash_region is missing. */
+#define VENUS_FB_BASE		0xE2A00000UL	/* live-host splash_region reg */
 #define VENUS_FB_REGION_SIZE	0x2300000UL	/* whole splash region          */
+
+/* Label "cont_splash_region": ABL's framebuffers used to live here at boot
+ * (static vendor_boot DTB) — kept as documentation, no longer the FB base. */
+#define VENUS_FB_BASE_STATIC_DTS	0xEA600000UL
 
 /* Two panel geometry options, from dtbo entry 46 ("xiaomi 38 08 0a"):
  * FHD  (default MI 11 setting): 1080x2400  -> stride 4320, fb 10,368,000 bytes
  * QHD+ (user setting):          1440x3200  -> stride 5760, fb 18,432,000 bytes
  * Both fit the 0x2300000 (36 MiB) splash region: expected framebuffer bytes
  * = W * H * 4 (a8r8g8b8) <= VENUS_FB_REGION_SIZE holds for either mode.
- * Default is FHD; build with -DVENUS_PANEL_QHD (build.sh "qhd" arg) for QHD. */
+ * Default is QHD (the live machine's actual user setting; the live Linux
+ * DTB reports the QHD 1440x3200 cmd panel, dtb_idx=4/dtbo_idx=46):
+ * venus_probe.c sets VENUS_PANEL_QHD itself, so plain `bash build.sh
+ * --venus` is QHD. FHD needs -DVENUS_PANEL_QHD removed (or an explicit
+ * "fhd" build flag) and is only a fallback. */
 #define VENUS_FB_W_FHD		1080
 #define VENUS_FB_H_FHD		2400
 #define VENUS_FB_W_QHD		1440

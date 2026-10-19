@@ -1,11 +1,13 @@
 /*
- * Venus probe path v3 (Xiaomi 11, SM8350). Called from shim_main when built
+ * Venus probe path v4 (Xiaomi 11, SM8350). Called from shim_main when built
  * with -DVENUS_PROBE; the sweet (sm7150) build is untouched. Entry logic:
  * start.S -> shim_main -> check FDT /chosen "linux,initrd-start"; when the
- * bootloader did not hand us an initrd, run the probe: multi-candidate FB
- * banner (no screen clear after the first region), CNTFRQ_EL0, SMCCC PSCI
- * version, then a self-terminating sequence: ~10 s busy-wait (CNTFRQ-scaled)
- * -> PSCI SYSTEM_OFF; if the call returns failure, PSCI SYSTEM_RESET.
+ * bootloader did not hand us an initrd, run the probe: FB base is read from
+ * the ABL DTB (/reserved-memory/splash_region reg) at runtime, falling back
+ * to soc_venus.h VENUS_FB_BASE when the node is absent; then the multi-base
+ * banner sweep, CNTFRQ_EL0, SMCCC PSCI version, and a self-terminating
+ * sequence: ~10 s busy-wait (CNTFRQ-scaled) -> PSCI SYSTEM_OFF; if the call
+ * returns failure, PSCI SYSTEM_RESET.
  * v3 semantics: power off, reboot, or fall back to ABL — it never hangs on
  * screen. Returns 1 so shim_main does NOT fall through to the loader.
  */
@@ -15,18 +17,25 @@
 #include "soc_venus.h"
 #include "venus_probe.h"
 
+/* QHD is the live machine's panel setting (live Linux DTB: QHD 1440x3200 cmd
+ * panel), so v4 forces it here instead of relying on a build flag. */
+#ifndef VENUS_PANEL_QHD
+#define VENUS_PANEL_QHD		1
+#endif
+
 #define PSCI_VERSION		0x84000000UL
 #define PSCI_SYSTEM_OFF		0x84000008UL
 #define PSCI_SYSTEM_RESET	0x84000009UL
 
-/* Splash-region neighbors to try when the documented base does not light the
- * panel: +32 MiB into the region, and the sm7150-era simplefb base. */
-static const uintptr_t fb_bases[] = {
-	VENUS_FB_BASE,		/* 0xEA600000: splash_region reg, from DT */
-	0xEA800000UL,		/* +0x02000000: ABL may have moved the scanout */
-	0x9C000000UL,		/* historical sm7150 cont_splash base */
-};
+/* Splash-region neighbors to try when the primary base does not light the
+ * panel. fb_bases[0] is filled at entry from the ABL DTB
+ * /reserved-memory/splash_region (the live-host value base 0xE2A00000 —
+ * the static-dts 0xEA600000 was disproved); on a missing node it falls
+ * back to VENUS_FB_BASE (0xE2A00000, soc_venus.h). */
+static uintptr_t fb_bases[3];
 #define FB_BASES_N	(sizeof(fb_bases) / sizeof(fb_bases[0]))
+/* fb_bases[1]: +32 MiB into the region in case ABL moved the scanout;
+ * fb_bases[2]: historical sm7150 cont_splash base. */
 
 #define rsr(r) ({ uint64_t _v; __asm__ volatile("mrs %0, " r : "=r"(_v)); _v; })
 
@@ -91,7 +100,7 @@ static void banner(uintptr_t base, const char *region_note)
 	con_str("FB BASE", buf);			/* per-region marker line */
 	if (region_note && region_note[0])
 		con_str("REGION", region_note);
-	con_str("VENUS", "PROBE v3 " VENUS_PROBE_TAG);
+	con_str("VENUS", "PROBE v4 " VENUS_PROBE_TAG);
 }
 
 int venus_probe_entry(uintptr_t dtb)
@@ -103,10 +112,24 @@ int venus_probe_entry(uintptr_t dtb)
 	if (fdt_chosen_u64(dtb, "linux,initrd-start", &initrd) && initrd)
 		return 0;	/* initrd present: let the payload path handle it */
 
+	/* FB base decision: read /reserved-memory/splash_region out of the
+	 * ABL-provided DTB (the live Linux host proved base 0xE2A00000 —
+	 * the static-dts 0xEA600000 caused three black screens). Missing
+	 * node -> fall back to VENUS_FB_BASE (also 0xE2A00000 now). */
+	uint64_t fb_base = VENUS_FB_BASE, fb_size = VENUS_FB_REGION_SIZE;
+	const char *fb_src = "fallback: dtb splash_region absent";
+	if (fdt_get_reg(dtb, "/reserved-memory/splash_region", &fb_base, &fb_size))
+		fb_src = "dtb /reserved-memory/splash_region";
+	fb_bases[0] = (uintptr_t)fb_base;
+	fb_bases[1] = (uintptr_t)fb_base + 0x02000000UL;	/* ABL may have moved scanout */
+	fb_bases[2] = 0x9C000000UL;			/* sm7150-era cont_splash */
+
 	/* Region 0: full banner on a cleared screen. */
 	con_fb = (volatile uint32_t *)fb_bases[0];
 	con_clear(BLUE);
 	banner(fb_bases[0], "primary (dt splash_region)");
+	con_hex2("FB", "base", (uint32_t)fb_base, "size", (uint32_t)fb_size);
+	con_str("FB-SRC", fb_src);
 	con_str("INITRD", "absent in /chosen (vendor_boot ramdisk not wired)");
 	con_hex("CNTFRQ_EL0", rsr("cntfrq_el0"));
 	fdt_get_string(dtb, "/psci", "method", method, sizeof(method));
@@ -124,7 +147,7 @@ int venus_probe_entry(uintptr_t dtb)
 	 * self-terminating sequence burned in before the off/reset attempt. */
 	con_fb = (volatile uint32_t *)fb_bases[0];
 	con_skip();
-	con_str("VENUS", "probe v3 done, system_off next");
+	con_str("VENUS", "probe v4 done, system_off next");
 	venus_delay_ten_seconds();
 
 	off_ret = psci_call_with_id(dtb, PSCI_SYSTEM_OFF);

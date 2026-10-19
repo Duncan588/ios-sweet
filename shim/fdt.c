@@ -47,9 +47,12 @@ static int node_match(const char *name, const char *comp, int comp_len)
 	return !comp_len && (*n == '\0' || *n == '@');
 }
 
-int fdt_get_string(uintptr_t fdt, const char *path, const char *prop, char *out, int len)
+/* Path-walk shared by fdt_get_string/fdt_get_reg: locate the property
+ * `prop` inside the node at `path` and hand back its raw value and length. */
+static int fdt_walk_prop(uintptr_t fdt, const char *path, const char *prop,
+			 uintptr_t *val, uint32_t *plen)
 {
-	if (!fdt || be32(fdt) != FDT_MAGIC || len <= 0)
+	if (!fdt || be32(fdt) != FDT_MAGIC)
 		return 0;
 
 	/* Split the absolute path into up to 5 components ("...", no leading '/'
@@ -104,19 +107,15 @@ int fdt_get_string(uintptr_t fdt, const char *path, const char *prop, char *out,
 			depth--;
 			break;
 		case FDT_PROP: {
-			uint32_t plen = be32(p), nameoff = be32(p + 4);
-			uintptr_t val = p + 8;
+			uint32_t plen_ = be32(p), nameoff = be32(p + 4);
+			uintptr_t val_ = p + 8;
 			if (pm == ncomp && depth == ncomp + 1 &&
 			    streq((const char *)(strings + nameoff), prop)) {
-				int i;
-				for (i = 0; i < len - 1 && (int)plen > i && *(volatile char *)(val + i); i++)
-					out[i] = *(volatile char *)(val + i);
-				out[i] = '\0';
-				if (i == len - 1)
-					return 0;	/* truncated: reject */
+				*val = val_;
+				*plen = plen_;
 				return 1;
 			}
-			p = align4(val + plen);
+			p = align4(val_ + plen_);
 			break;
 		}
 		case FDT_NOP:
@@ -125,6 +124,42 @@ int fdt_get_string(uintptr_t fdt, const char *path, const char *prop, char *out,
 			return 0;
 		}
 	}
+}
+
+int fdt_get_string(uintptr_t fdt, const char *path, const char *prop, char *out, int len)
+{
+	uintptr_t val;
+	uint32_t plen;
+
+	if (len <= 0 || !fdt_walk_prop(fdt, path, prop, &val, &plen))
+		return 0;
+	int i;
+	for (i = 0; i < len - 1 && (int)plen > i && *(volatile char *)(val + i); i++)
+		out[i] = *(volatile char *)(val + i);
+	out[i] = '\0';
+	if (i == len - 1)
+		return 0;	/* truncated: reject */
+	return 1;
+}
+
+int fdt_get_reg(uintptr_t fdt, const char *path, uint64_t *base, uint64_t *size)
+{
+	uintptr_t val;
+	uint32_t plen;
+
+	if (!fdt_walk_prop(fdt, path, "reg", &val, &plen))
+		return 0;
+	if (plen == 16) {		/* 2+2 cells: 64-bit address, 64-bit size */
+		*base = (uint64_t)be32(val) << 32 | be32(val + 4);
+		*size = (uint64_t)be32(val + 8) << 32 | be32(val + 12);
+		return 1;
+	}
+	if (plen == 8) {		/* 1+1 cells: 32-bit address, 32-bit size */
+		*base = be32(val);
+		*size = be32(val + 4);
+		return 1;
+	}
+	return 0;
 }
 
 int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out)
