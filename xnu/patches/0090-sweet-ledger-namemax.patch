@@ -1,0 +1,29 @@
+xnu: 0090 sweet widen LEDGER_NAME_MAX 32 -> 40
+
+Real-phone boot #18 dies inside init_task_ledgers with the panic
+string swallowed; QEMU crosses the same window and reports
+"couldn't create entries for task ledger template @task.c:1265".
+Root cause: osfmk/kern/ledger.h clamps every ledger name to
+LEDGER_NAME_MAX (32), but init_task_ledgers() registers an official
+32-char key (purgeable_nonvolatile_compressed), so
+ledger_entry_add_with_flags() hits strlen(key) >= LEDGER_NAME_MAX,
+returns -1 and panics before any task ledger exists.  Upstream key
+width, not a build-config problem.  Widen LEDGER_NAME_MAX to 40 so a
+full 32-char official key plus NUL fits; every widened buffer
+(ledger_info/ledger_template_info/ledger_entry_info, et_* names) is
+kernel-internal only, so the size delta has no ABI exposure.
+diff --git a/osfmk/kern/ledger.h b/osfmk/kern/ledger.h
+--- a/osfmk/kern/ledger.h
++++ b/osfmk/kern/ledger.h
+@@ -45,7 +45,10 @@
+ /* LEDGER_MAX_CMD always tracks the index of the last ledger command. */
+ #define LEDGER_MAX_CMD          LEDGER_LIMIT
+ 
+-#define LEDGER_NAME_MAX 32
++/* Sweet 0090: widened 32->40; the official task-ledger keys
++ * purgeable_nonvolatile_compressed etc. need one full 32-char name plus NUL,
++ * and the widened name buffers are kernel-internal only (no ABI). */
++#define LEDGER_NAME_MAX 40
+ 
+ struct ledger_info {
+ 	char    li_name[LEDGER_NAME_MAX];
