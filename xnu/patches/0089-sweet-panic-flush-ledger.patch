@@ -1,0 +1,335 @@
+xnu: 0089 sweet panic flush + task ledger beats
+
+drill: 0089 sweet force the panic string onto the venus screen and
+beat init_task_ledgers
+
+Boot 18 on venus (commit d45b0f3, run 39290866805) wakes past every
+0085/0086/0087 drill ("probe sentinel restored DAIF"), walks through
+Telemetry/Scheduler/BANK/IPC and then stops right after
+
+    debug_log_init: Error!! gPanicBase is still not initialized
+    panic_trace: PE_arm_debug_enable_trace enter
+    panic_trace: PE_arm_debug_enable_trace exit
+
+with a silent freeze (ARIAS photos).  QEMU with the same 0088 kernel
+prints the next event: panic(cpu 0 caller ...): couldn't create entries
+for task ledger template @task.c:1265 (init_task_ledgers).  Source
+reading explains the difference as a swallow, not a platform wedge:
+
+- gPanicBase is only initialized by check_for_panic_log()
+  (pexpert/arm/pe_init.c) and sweet ADTs carry no iBoot "pram" node and
+  no embedded-panic-log-size: gPanicBase stays 0 for this whole boot.
+- debug_log_init() therefore errors out and the debug_buf pointers stay
+  NULL; every paniclog_append_noflush() call is dropped.
+- panic() does have a sweet framebuffer hook from patch 0010
+  (osfmk/kern/debug.c, panic_trap_to_debugger), but it routes through
+  sweet_early_panic(), which returns as soon as the early console was
+  handed over to the serial console.  On sweet the fbcon console
+  registers itself as a serial device, so serial_init() returns 1 and
+  the hand-over (early_disabled=1) happens on every venus boot: the
+  panic string was swallowed as well.
+- the debugger tail print (panic_debugger_log at the end of
+  debugger_collect_diagnostics) never ran on hardware because
+  PEHaltRestartInternal(kPEPanicBegin) -> PE_init_panicheader() hits its
+  assert(gPanicBase != 0); the nested panic that follows degrades to the
+  nested-panic stall in panic_stop()/panic_spin_forever() with all of
+  its messages dropped into the paniclog that does not exist.  That is
+  the ARIAS freeze point.  (QEMU printed the panic line earlier in the
+  path because it crossed debugger_collect_diagnostics while console
+  output was still linked in.)
+
+This patch, everything inside #if defined(ARM64_BOARD_CONFIG_SWEET)
+(unless already gated by an existing #if block):
+
+- SWEET.h: replace PLATFORM_PANIC_LOG_DISABLED with a real panic log
+ region: PLATFORM_PANIC_LOG_PADDR 0xaff80000, PLATFORM_PANIC_LOG_SIZE
+  0x80000 - the tail of the ABL ramdump-framebuffer reservation
+  (0xaf000000..0xb0000000), unused after the splash, below the kernel
+  physBase (0xb0000000) so no later VM allocation can take it.  Same
+  emergency hatch BCM2837.h uses (0x3c0fc000).  check_for_panic_log()
+  then takes the PLATFORM_PANIC_LOG branch: gPanicBase is ready
+  extremely early, PE_init_panicheader() drops the assert with it and
+  debug_log_init() ends "OK.", so from now on every panic has a real
+  paniclog buffer.
+- pe_init.c: print the mapped panic log region once ("P0089: panic
+  log mapped ...") for boot log confirmation.
+- debug.c: the panic_trap_to_debugger hook now calls a new
+  sweet_early_panic_flush(fmt, args, caller), which ignores the
+  early_console hand-over and prints "P0089: panic flush: <string>
+  caller 0x..." and "P0089: panic out force-flush" straight into the
+  framebuffer before any panic machinery can stall, and restores the
+  previous early_disabled state.  So even among future panic stalls the
+  inputs of the panic are on screen, at the very front of the chain.
+- sweet_early.c/h: the flush implementation (no locks, no allocation,
+  _doprnt only, as sweet_early_panic before).
+- task.c: init_task_ledgers() position beats: template created, one
+  named beat per main ledger group with the value printed, SFI class
+  beats in addition, "all entries ok" before template_complete, and the
+  (dead-with-coalitions) task_init-init_task_ledgers branch beat.  If
+  venus really dies in init_task_ledgers, the last P0089 line names the
+  ledger group that the entries stopped at.
+- coalition.c: "P0089: coalitions_init: calling init_task_ledgers"
+  before the call this boot stream runs (CONFIG_COALITIONS is on).
+
+Verify on next boot: panic log mapping row + 'panic out force-flush'
+with the actual panic story, or the ledger beats pinning the failing
+group.
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1073,8 +1073,18 @@
+ #pragma clang diagnostic pop
+ 
+ #if defined(SWEET)
+-	/* No CPU/thread/debugger state is required for this first panic copy. */
+-	sweet_early_panic(panic_format_str, panic_args);
++	/*
++	 * 0089: the original sweet_early_panic() copy bails once the early
++	 * console has been handed over to the serial console (sweet's fbcon
++	 * registers itself as a serial device, so serial_init() returns 1 and
++	 * the hand-over happens on every venus boot) - and with no pram node
++	 * gPanicBase stays 0, so the paniclog has no buffer and the debugger
++	 * tail print never ran on hardware: every panic was a black box.
++	 * No CPU/thread/debugger state is required here; force the panic
++	 * inputs through the (still mapped) framebuffer console before any
++	 * panic machinery can stall.
++	 */
++	sweet_early_panic_flush(panic_format_str, panic_args, panic_caller);
+ #endif
+ 
+ #if defined(__x86_64__) && (DEVELOPMENT || DEBUG)
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -10,6 +10,7 @@
+ void sweet_early_mark(unsigned int stage, const char *label);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
++void sweet_early_panic_flush(const char *fmt, va_list *args, unsigned long caller);
+ void sweet_early_relocate(uint64_t base);
+ void sweet_early_disable(void);
+ #else
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -125,6 +125,46 @@
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
++/*
++ * 0089: unconditionally force the panic inputs onto the framebuffer.
++ * The regular sweet_early_panic() above is dead by the time any later
++ * panic happens: sweet's fbcon console registers itself as a serial
++ * device, so serial_init() hands the early console over (arm_init
++ * stage 20 sets serial_exists), and its early_disabled flag made every
++ * subsequent panic a pure black box on the screen.
++ */
++void
++sweet_early_panic_flush(const char *fmt, va_list *args, unsigned long caller)
++{
++	static const char p89dig[16] = {
++		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
++		'a', 'b', 'c', 'd', 'e', 'f'
++	};
++	const unsigned int saved_disabled = early_disabled;
++
++	if (early_panicking) {
++		return;
++	}
++	early_panicking = 1;
++	early_disabled = 0;
++	sweet_early_string("\nP0089: panic flush: ");
++	{
++		va_list copy;
++
++		va_copy(copy, *args);
++		_doprnt(fmt, &copy, sweet_early_putc, 16);
++		va_end(copy);
++	}
++	sweet_early_string(" caller 0x");
++	for (int nib = 15; nib >= 0; nib--) {
++		sweet_early_putc(p89dig[(caller >> (nib * 4)) & 0xf]);
++	}
++	sweet_early_putc('\n');
++	sweet_early_string("P0089: panic out force-flush\n");
++	__asm__ volatile("dsb sy" ::: "memory");
++	early_disabled = saved_disabled;
++}
++
+ void
+ sweet_early_relocate(uint64_t base)
+ {
+--- a/osfmk/kern/task.c
++++ b/osfmk/kern/task.c
+@@ -989,6 +989,9 @@
+ #if CONFIG_COALITIONS
+ 	assert(task_ledger_template);
+ #else /* CONFIG_COALITIONS */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: task_init: init_task_ledgers (no coalitions)\n");
++#endif
+ 	init_task_ledgers();
+ #endif /* CONFIG_COALITIONS */
+ 
+@@ -1092,6 +1095,9 @@
+ 	if ((t = ledger_template_create("Per-task ledger")) == NULL) {
+ 		panic("couldn't create task ledger template");
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: template created\n");
++#endif
+ 
+ 	task_ledgers.cpu_time = ledger_entry_add(t, "cpu_time", "sched", "ns");
+ 	task_ledgers.tkm_private = ledger_entry_add(t, "tkm_private",
+@@ -1104,6 +1110,11 @@
+ 	    "bytes");
+ 	task_ledgers.internal = ledger_entry_add(t, "internal", "physmem",
+ 	    "bytes");
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: internal=%d\n",
++	    task_ledgers.internal);
++#endif
+ 	task_ledgers.iokit_mapped = ledger_entry_add_with_flags(t, "iokit_mapped", "mappings",
+ 	    "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.alternate_accounting = ledger_entry_add_with_flags(t, "alternate_accounting", "physmem",
+@@ -1114,6 +1125,11 @@
+ 	    "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.phys_footprint = ledger_entry_add(t, "phys_footprint", "physmem",
+ 	    "bytes");
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: phys_footprint=%d\n",
++	    task_ledgers.phys_footprint);
++#endif
+ 	task_ledgers.internal_compressed = ledger_entry_add(t, "internal_compressed", "physmem",
+ 	    "bytes");
+ 	task_ledgers.reusable = ledger_entry_add(t, "reusable", "physmem", "bytes");
+@@ -1122,6 +1138,11 @@
+ 	task_ledgers.purgeable_nonvolatile = ledger_entry_add_with_flags(t, "purgeable_nonvolatile", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.purgeable_volatile_compressed = ledger_entry_add_with_flags(t, "purgeable_volatile_compress", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.purgeable_nonvolatile_compressed = ledger_entry_add_with_flags(t, "purgeable_nonvolatile_compress", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: purgeable_nonvolatile_compressed=%d\n",
++	    task_ledgers.purgeable_nonvolatile_compressed);
++#endif
+ #if DEBUG || DEVELOPMENT
+ 	task_ledgers.pages_grabbed = ledger_entry_add_with_flags(t, "pages_grabbed", "physmem", "count", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.pages_grabbed_kern = ledger_entry_add_with_flags(t, "pages_grabbed_kern", "physmem", "count", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+@@ -1140,6 +1161,11 @@
+ 	task_ledgers.media_footprint = ledger_entry_add_with_flags(t, "media_footprint", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.media_nofootprint_compressed = ledger_entry_add_with_flags(t, "media_nofootprint_compressed", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.media_footprint_compressed = ledger_entry_add_with_flags(t, "media_footprint_compressed", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: media_footprint_compressed=%d\n",
++	    task_ledgers.media_footprint_compressed);
++#endif
+ 	task_ledgers.graphics_nofootprint = ledger_entry_add_with_flags(t, "graphics_nofootprint", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.graphics_footprint = ledger_entry_add_with_flags(t, "graphics_footprint", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.graphics_nofootprint_compressed = ledger_entry_add_with_flags(t, "graphics_nofootprint_compressed", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+@@ -1149,6 +1175,11 @@
+ 	task_ledgers.neural_nofootprint_compressed = ledger_entry_add_with_flags(t, "neural_nofootprint_compressed", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 	task_ledgers.neural_footprint_compressed = ledger_entry_add_with_flags(t, "neural_footprint_compressed", "physmem", "bytes", LEDGER_ENTRY_ALLOW_PANIC_ON_NEGATIVE);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: neural_footprint_compressed=%d\n",
++	    task_ledgers.neural_footprint_compressed);
++#endif
++
+ #if CONFIG_FREEZE
+ 	task_ledgers.frozen_to_swap = ledger_entry_add(t, "frozen_to_swap", "physmem", "bytes");
+ #endif /* CONFIG_FREEZE */
+@@ -1157,6 +1188,11 @@
+ 	    "count");
+ 	task_ledgers.interrupt_wakeups = ledger_entry_add(t, "interrupt_wakeups", "power",
+ 	    "count");
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: interrupt_wakeups=%d\n",
++	    task_ledgers.interrupt_wakeups);
++#endif
+ 
+ #if CONFIG_SCHED_SFI
+ 	sfi_class_id_t class_id, ledger_alias;
+@@ -1179,6 +1215,10 @@
+ 			task_ledgers.sfi_wait_times[class_id] = sfi_ledger_entry_add(t, class_id);
+ 		}
+ 
++		#if defined(ARM64_BOARD_CONFIG_SWEET)
++		printf("P0089: init_task_ledgers: sfi class 0x%x entry %d\n",
++		    class_id, task_ledgers.sfi_wait_times[class_id]);
++#endif
+ 		if (task_ledgers.sfi_wait_times[class_id] < 0) {
+ 			panic("couldn't create entries for task ledger template for SFI class 0x%x", class_id);
+ 		}
+@@ -1197,6 +1237,11 @@
+ #endif /* CONFIG_PHYS_WRITE_ACCT */
+ 	task_ledgers.energy_billed_to_me = ledger_entry_add(t, "energy_billed_to_me", "power", "nj");
+ 	task_ledgers.energy_billed_to_others = ledger_entry_add(t, "energy_billed_to_others", "power", "nj");
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: energy_billed_to_others=%d\n",
++	    task_ledgers.energy_billed_to_others);
++#endif
+ 
+ #if CONFIG_MEMORYSTATUS
+ 	task_ledgers.memorystatus_dirty_time = ledger_entry_add(t, "memorystatus_dirty_time", "physmem", "ns");
+@@ -1323,6 +1368,10 @@
+ 	    task_wakeups_rate_exceeded, NULL, NULL);
+ 	ledger_set_callback(t, task_ledgers.physical_writes, task_io_rate_exceeded, (void *)FLAVOR_IO_PHYSICAL_WRITES, NULL);
+ 
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: init_task_ledgers: all entries ok\n");
++#endif
+ #if !XNU_MONITOR
+ 	ledger_template_complete(t);
+ #else /* !XNU_MONITOR */
+--- a/osfmk/kern/coalition.c
++++ b/osfmk/kern/coalition.c
+@@ -2028,6 +2028,9 @@
+ 
+ 	smr_hash_init(&coalition_hash, COALITION_HASH_SIZE_MIN);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: coalitions_init: calling init_task_ledgers\n");
++#endif
+ 	init_task_ledgers();
+ 
+ 	init_coalition_ledgers();
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -97,6 +97,10 @@
+ 	gPanicBase = ml_io_map_wcomb(PLATFORM_PANIC_LOG_PADDR, PLATFORM_PANIC_LOG_SIZE);
+ 	panic_text_len = PLATFORM_PANIC_LOG_SIZE - sizeof(struct embedded_panic_header);
+ 	gPanicSize = PLATFORM_PANIC_LOG_SIZE;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	printf("P0089: panic log mapped gPanicBase=0x%llx size=0x%x\n",
++	    (unsigned long long)gPanicBase, gPanicSize);
++#endif
+ #else
+ 	DTEntry entry, chosen;
+ 	unsigned int size;
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -39,7 +39,20 @@
+ #define HAS_GIC_V3                1
+ 
+ #ifndef ASSEMBLER
+-#define PLATFORM_PANIC_LOG_DISABLED
++/*
++ * 0089: sweet ADTs have no iBoot "pram" node, so check_for_panic_log()
++ * left gPanicBase == 0: debug_log_init() refused the panic buffer and
++ * PE_init_panicheader() subsequently tripped its assert(gPanicBase != 0)
++ * inside a nested panic that dies in panic_stop(): the black-box freezes
++ * seen on boot#17/#18 right after the "PE_arm_debug_enable_trace" beats.
++ * Map the panic log to the tail of the ABL ramdump-framebuffer
++ * reservation (0xaf000000..0xb0000000): it is unused after the boot
++ * splash, it stays below the kernel physBase (0xb0000000) so no later VM
++ * allocation can ever take it, and the chosen block is page-aligned.
++ * Same escape hatch BCM2837.h uses for its panic region (0x3c0fc000).
++ */
++#define PLATFORM_PANIC_LOG_PADDR        0xaff80000ULL
++#define PLATFORM_PANIC_LOG_SIZE         0x00080000
+ #endif /* ! ASSEMBLER */
+ 
+ /*
