@@ -57,9 +57,9 @@ if [ "$VENUS" = 1 ]; then
 		# byte (no GKI cpio concatenation). No --dtb: ABL uses its own fused
 		# DTB on venus; upstream packed a dtb for sweet, try without first.
 		mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
+			--dtb "${2:?venus v2 needs a dtb file: build.sh --venus 2 <payload> <dtb>}" \
 			--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x01000000 \
-			--tags_offset 0x100 --pagesize 4096 \
-			--os_version 17.0.0 --os_patch_level 2035-06 \
+			--tags_offset 0x100 --pagesize 4096		--os_version 17.0.0 --os_patch_level 2035-06 \
 			--cmdline "console=null" -o out/shim-boot-venus.img
 	else
 		# venus: v3/v4 boot header (no page/base/offset/dtb slots in the v3 boot part).
