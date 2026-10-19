@@ -11,6 +11,9 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#ifdef VENUS_PROBE
+#include "venus_probe.h"
+#endif
 
 #define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
@@ -374,6 +377,11 @@ void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
+#ifdef VENUS_PROBE
+	/* venus (SM8350) probe path; sweet/default builds are untouched. */
+	if (venus_probe_entry(dtb))
+		return;
+#endif
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);

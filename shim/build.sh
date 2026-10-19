@@ -1,13 +1,29 @@
 #!/bin/bash
 # Build the shim and wrap it in a boot.img v2 that mirrors the stock PixelOS header.
+#   ./build.sh [payload]              default sweet (sm7150/sweet) path, unchanged
+#   ./build.sh --venus [3|4] [payload] venus (SM8350) probe image, boot header v3/v4
 set -euo pipefail
 cd "$(dirname "$0")"
 CC=aarch64-linux-gnu-gcc
 OBJCOPY=aarch64-linux-gnu-objcopy
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
 mkdir -p out
+
+VENUS=0
+if [ "${1:-}" = "--venus" ]; then
+	shift
+	VENUS=1
+	VENUS_HV=3
+	case "${1:-}" in
+		3|4) VENUS_HV=$1; shift ;;
+	esac
+	echo "warning: venus mode: header_version=$VENUS_HV, FB/etc values in soc_venus.h are TODO(dump) placeholders"
+	if [ -n "${1:-}" ]; then echo "warning: venus v$VENUS_HV boot header carries no dtb slot; '$1' will NOT be packed" \
+		"(dtb belongs in vendor_boot/dtbo; run dump packing separately)"; fi
+fi
+
 for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c; do
-	$CC $CFLAGS -c $f -o out/${f%.*}.o
+	$CC $CFLAGS $([ "$VENUS" = 1 ] && echo -DVENUS_PROBE) -c $f -o out/${f%.*}.o
 done
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
@@ -25,6 +41,14 @@ if [ -n "${1:-}" ]; then
 	cp "$1" out/ramdisk.bin
 else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
+fi
+if [ "$VENUS" = 1 ]; then
+	# venus: v3/v4 boot header (no page/base/offset/ddt slots in the v3 boot part).
+	mkbootimg --header_version "$VENUS_HV" --kernel out/Image --ramdisk out/ramdisk.bin \
+		--os_version 17.0.0 --os_patch_level 2035-06 \
+		--cmdline "console=null" -o out/shim-boot-venus.img
+	ls -l out/Image out/shim-boot-venus.img
+	exit 0
 fi
 mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
 	--dtb ../dtb/boot_unpacked/dtb --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
