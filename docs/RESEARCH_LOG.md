@@ -104,3 +104,9 @@ Xiaomi/Qualcomm ABL（解锁 BL，boot v2）
 ### 关键发现（附证据）
 ### 未解决问题 / 阻塞
 ```
+
+## 2026-10-19（预估）— 真机探针 runbook 就绪
+
+- 【交付】`tools/venus_boot_probe.sh`（笔记本侧运行；前置检查 adb/fastboot、40s 超时轮询、getvar unlocked/current-slot/max-download-size 各一行、`fastboot boot <img>` 前后时间戳、全输出存 `logs/venus-probe-<ts>.log`、完成后**不自动重启**并打印"观察窗口开始"；脚本内无任何 flash/erase/format）。`tools/venus_recover_note.md` 为 Windows+笔记本双端黑屏恢复速查（等 30s → Power+音量下 10s → fastboot devices 验证；完全无响应则拔线 5s 重插；**绝不使用小米官方工具**）。
+- 【执行要点】连接方式：Windows 侧 `ssh notebook`，adb/fastboot 仅在笔记本；venus 活动槽 _b；`fastboot boot` 临时启动不写分区；BL 已解锁（verifiedbootstate=orange），ADR-0008 已自动授权本实验；root 为 APatch（`su -c`，不认 `-qc`）。镜像路径做参数传入。
+- 【状态】脚本与速查已提交 venus-probe 分支；本地 Windows 无 bash，未执行 `bash -n`，仅目视核对（标注：未执行），首跑须笔记本端验证。恢复动作按速查文档执行并补记回本日志。
