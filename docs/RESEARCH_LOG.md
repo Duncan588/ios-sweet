@@ -191,3 +191,13 @@ amdisk overlaps kernel memory。
 - 内核不动不换：xnu/out/kernel.development.sweet sha256 复核 de315bfa…f7dccf（CI run 39193640899），与第九次一致，避免与 XNU 侧修复（CNTP_CTL_EL0 panic）冲突。ADT 沿用 venus-adt.bin（c3dceb02…a1c3e1d）。
 - 产物：shim/out/payload-venu0.bin 16,610,928B sha256 **26e7a2ea312df7f76e19e9bcfe05a1200a34c7c4a466d2b78013466eaac58cff**（fixups=0、virt_base/entry 与第九次逐字段一致——只有 cmdline 变化）。
 - 发射：bundle→scp→ff 笔记本 ~/ios-sweet-vp4 → build.sh --venus 2（v2 头 + /home/monster/vboot_dtb_04.dtb，沿用 19b 成功通路）→ tools/venus_boot_probe.sh 真机（本会话预算 2 次 fastboot boot）。结果补记于本节末尾与 NOTES.md 置顶 UPDATE。
+
+## 2026-10-19（第十一次）─ 补充：d22ap.adt 官方路线提取（venus-probe @729e4e1，本地完成，无真机操作）
+- 【官方命令[VERIFIED-README:94-95]】按 README 原样执行（Windows，Python 3.11 + 官方 blacktop/ipsw CLI v3.1.739 Windows x86_64 binary）：
+  - `python tools/remotezip.py <URL> DeviceTree.d22ap.im4p research/ipsw-x/dt` → `Firmware/all_flash/DeviceTree.d22ap.im4p` 33719 bytes，CRC-32 ok。
+  - `ipsw img4 im4p extract research/ipsw-x/dt/Firmware/all_flash/DeviceTree.d22ap.im4p -o research/ipsw-x/d22ap.adt` → 186084 bytes。
+- 【IPSW URL[VERIFIED-ipsw.me API+Apple 官方 CDN]】iPhone10,3 iOS 16.7.16 build 20H392，`https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw`（ipsw.me metadata: signed=true，released 2026-05-11）。只 remotezip 单文件，未下载整个 IPSW。
+- 【哈希脚注[本地计算]】DeviceTree.d22ap.im4p sha256 = `480e8b0888949b4128b7aa2cd254497581c69e1bafa596a760b2fa955a8a6368`；d22ap.adt sha256 = `9e670987c80493bd69aba7be62e3179c04663324d9249b0973675baac175dbf1`。
+- 【/product 复制路径[VERIFIED-代码零改动]】mkadt_venus.py 直接复用 `mkadt.build(qemu=False)`，`mkadt.py:47 d22ap_product()` / `mkadt.py:212-213` 组装 `/product` 节点；缺的只是工件（RESEARCH_LOG「首轮审计」失败候选 1 即此）。--dump 确认新 venus-adt.bin `/product` 含 product-name 'iPhone X'、sandman-support、display-mirroring 等共 61 项属性。
+- 【产物[REBUILT]】`shim/out/venus-adt.bin` 12740 bytes，sha256 = `67dad381c16c60acbf6d14d3acbf4a492ca28e4c31362741cad8d7b9e38064d6`；替代第十次记录的旧 hash（c3dceb02…）。B 代理需用新 ADT 重打 payload 再 boot。
+- 【合规】research/ipsw-x/ 在 .gitignore（Apple 版权工件不入 git，README "Not in git: Apple firmware" 口径一致）；未 push。

@@ -2,6 +2,28 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19e d22ap.adt 官方路线提取，/product 补齐（venus-adt.bin 已重打）（最先读这节） <<<
+
+- 官方 README 命令原样执行（Windows 本机，无真机操作）：
+  `python tools/remotezip.py <URL> DeviceTree.d22ap.im4p research/ipsw-x/dt`（33719 bytes，CRC-32 ok）→
+  `ipsw img4 im4p extract research/ipsw-x/dt/Firmware/all_flash/DeviceTree.d22ap.im4p -o research/ipsw-x/d22ap.adt`（186084 bytes）。
+  IPSW：iPhone10,3 iOS 16.7.16 (20H392)，Apple 官方 CDN（当前 signed）：`https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw`。
+- sha256 脚注：`DeviceTree.d22ap.im4p` = `480e8b0888949b4128b7aa2cd254497581c69e1bafa596a760b2fa955a8a6368`；`d22ap.adt` = `9e670987c80493bd69aba7be62e3179c04663324d9249b0973675baac175dbf1`。
+- 工件按要求不入 git（research/ 已在 .gitignore）；ipsw CLI 未走 brew（笔记本无 brew），改用官方 blacktop/ipsw GitHub release v3.1.739 windows_x86_64（README credits 所列同一工具上游）。
+- **mkadt_venus.py 零代码改动**：它复用 `mkadt.build(qemu=False)`，`d22ap_product()` 一直在代码路径里，缺的只是工件；此前 UPDATE-19d 偏离清单第 8 条（ADT /product 节点缺失）就此关闭。
+- venus-adt.bin 已重打：`shim/out/venus-adt.bin`，sha256 = `67dad381c16c60acbf6d14d3acbf4a492ca28e4c31362741cad8d7b9e38064d6`，12740 bytes；--dump 确认 `/product` 含 product-name 'iPhone X'、sandman-support 等共 61 项属性。旧 hash c3dceb02…（19d 记录）作废。
+- boot 不归本代理（B 代理负责）；B 需用新 ADT 重打 payload（venus-adt.bin 不是 payload 本身）。
+
+#### official-alignment B 提案：QEMU 官方对齐（tools/qemu-sweet.py 打通 venus payload，只列不改）
+
+1. **FB 常量硬编码**：qemu-sweet.py 顶部 `FB_BASE/FB_W/FB_H = 0x9c000000, 1080, 2400`（sweet）；venus 应像 qemu-venus.py 那样从 `shim/soc_venus.h` 解析（0xE2A00000/1440x3200），否则 pmemsave 截帧与 boot_args fb 字段双双错位。
+2. **boot_args 内嵌 fb 字段**（build_image() 同样硬编码 FB_*），需与第 1 条同源参数化。
+3. **RAM 上限判定**：`ram_gib = max(4, …)` 由 payload 头 mem_size 推导、virt 底 0x40000000——venus payload 用第一 bank 0x80000000+0x37500000，落在 4G 内，公式本身兼容，仅需确认 `-m` 用推导值而非手写。
+4. **CPU 型号**：`--cpu cortex-a76`（sweet Kryo470 口径）；venus boot-args cpus=1 只跑 cpu0，短期可沿用（或 cortex-x1 口径），SMP 真开再定，见 19d 清单第 3 条。
+5. **字体解码**：decode_screen 的 2x iso_font 逻辑与 SoC 无关，venus 直接复用；前提是内核同款 `_iso_font`（同一 xnu 构建，成立）。
+6. **入口语义**：SWEETXNU v1 头解析路径与 venus payload 同格式（loader.c 口径一致），预期无需改动；待 venus XNU-linear payload 实测后关闭本条。
+
+
 ### >>> UPDATE 2026-10-19d payload 官方对齐 rebuild（十次）+ official-alignment A 偏离清单（最先读）<<<
 
 （boot 结果见本节末尾补记；本轮内容 = 只列不改的偏离清单 + 键盘重打 payload。）
