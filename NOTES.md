@@ -1,3 +1,16 @@
+### >>> UPDATE 2026-10-20c boot#19 备发完成：0088+0089+0090 内核（panic 强制上屏 + ledger beats + LEDGER_NAME_MAX 40），镜像已打不发射（最先读这节） <<<
+
+- **本轮 commit**：`c1bb7ea`（0089：debug.c 强制 panic flush 钩子 `sweet_early_panic_flush`、SWEET.h `PLATFORM_PANIC_LOG_PADDR 0xaff80000` / SIZE `0x80000`（ABL ramdump-fb 预约区尾段之上/kernel physBase 之下，VM 永不取用）、task.c init_task_ledgers 全程 beats + coalition.c 调用前后行 + pe_init.c gPanicBase 映射确认行；7 文件，全 `#if defined(ARM64_BOARD_CONFIG_SWEET)` 门）、`0f21432`（0089 patch header 叙事修正：无 assert 会 fire，venus 冻结点最可能在 kPEPanicBegin 硬件 beat，gPanicBase==0 只是把整个 panic 故事藏掉）、`dc40ee2`（0090，另一会话：`LEDGER_NAME_MAX` 32→40，纯宏无打印——boot#18 官方同款 32 字符 ledger key 触发 `task.c:1265` panic 的根因修复）。
+- **修后 patch 双验证已绿**（推 CI 前，notebook 真树）：`git apply --check` + round-trip 字节一致；xnu-cc.py 5/5 TU 编译通过，`_sweet_early_panic_flush` 在 sweet_early.c.o 定义为 T。
+- **CI run 39298895700 success**（headSha `dc40ee2`，前 run 39298776728 被并发抢占取消后自动轮转；本地 +22 分钟）。内核 `xnu/out/kernel.development.sweet` 17,206,336 B **sha256 `a4f8a678c1b2bf9b5bfb4525a7e5c328ea3c45e7fdc42a9b2e9f0190c682d70f`**（与 CI SHA256SUMS 一致，scp 到笔记本 `~/kernels/kernel-0089` 逐字节一致）。字符串齐全：P0087/P0088/P0089 FOUND；P0090 MISSING 属预期（纯宏改动无常量）。
+- **镜像已打（2026-10-20 02:10，官方命令，ADT 仍 `~/venus-adt-0083.bin` INTID 27 版）**：`payload-venu0-0089.bin` 16,613,888 B sha256 `c72640de66dacb971a3039b06fb3e28fae44437af67cc4171e3421d2ee2f98f7`；`shim-boot-venus-0089.img` 17,293,312 B sha256 `4ea745cb46aed1df736b81fa2c5f68031bd30b3a700cad8ab562f736fa0e9be8`。**待发射**（userdata 已是 iOS root，同 boot#18 之后基线）。
+- **发射命令**（主会话/用户）：`cd ~/ios-sweet-vp4 && tools/venus_boot_probe.sh shim/out/shim-boot-venus-0089.img`；屏定后拍照判读表：
+  - 开机段新行：`P0089: panic log mapped gPanicBase=0xaff80000 size=0x80000`（gPanicBase 不再为 0）→ `P0089: coalitions_init: calling init_task_ledgers` → ledger beats（`P0089: ledger: template ...` / `entry=<value>` / `all entries ok`）。
+  - **过 ledger（0090 宏生效）**：继续走 `Firehose configured` → `OSLog stream configured` + `P0088 probe sentinel restored`（boot#18 判读表沿用）。
+  - **再死在 ledger**：最后一条 `P0089: ledger …` 点名具体组件/entry 即凶手。
+  - ** panic 段**：任何 panic 应上屏 `P0089: panic flush: <串> caller 0x…` + `P0089: panic out force-flush`，不再是黑箱。
+  - 若连 `P0089: panic log mapped` 都没有 → gPanicBase 映射本身失败，pexpert 打点行即现场。
+
 ### >>> UPDATE 2026-10-20b boot#18 备发完成：0088 钉死 Firehose→OSLog stream 静默窗 + userdata iOS root 已刷入（待用户发射拍屏；最先读这节） <<<
 
 - **新 wall 定性（QEMU 对照，观测）**：官方 `tools/qemu-sweet.py` 用同一 0087 内核**正常跨过** `Firehose configured` → `OSLog stream configured` 窗口 ⇒ 静默 wall 是 **venus 平台特有**，不是内核通用逻辑。窗口内 OSLOG-SECOND startup 集合 = {oslog_init_logmem, oslog_init_log_queues, oslog_init_firehose（tail）, oslog_msgbuf(XNUPOST), oslog_stream_init} —— wall 必在其中之一的深部语句或其间。
