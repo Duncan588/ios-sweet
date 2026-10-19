@@ -16,7 +16,7 @@ if [ "${1:-}" = "--venus" ]; then
 	VENUS_HV=3
 	VENUS_QHD=0
 	case "${1:-}" in
-		3|4) VENUS_HV=$1; shift ;;
+		2|3|4) VENUS_HV=$1; shift ;;
 	esac
 	if [ "${1:-}" = "qhd" ]; then VENUS_QHD=1; shift; fi
 	if [ "$VENUS_QHD" = 1 ]; then CFLAGS="$CFLAGS -DVENUS_PANEL_QHD"; fi
@@ -51,10 +51,22 @@ else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
 if [ "$VENUS" = 1 ]; then
-	# venus: v3/v4 boot header (no page/base/offset/ddt slots in the v3 boot part).
-	mkbootimg --header_version "$VENUS_HV" --kernel out/Image --ramdisk out/ramdisk.bin \
-		--os_version 17.0.0 --os_patch_level 2035-06 \
-		--cmdline "console=null" -o out/shim-boot-venus.img
+	if [ "$VENUS_HV" = 2 ]; then
+		# v2 like upstream sweet's shim-boot.img: payload is the ONLY ramdisk,
+		# no vendor_boot association -> ABL should hand initrd = payload first
+		# byte (no GKI cpio concatenation). No --dtb: ABL uses its own fused
+		# DTB on venus; upstream packed a dtb for sweet, try without first.
+		mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
+			--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x01000000 \
+			--tags_offset 0x100 --pagesize 4096 \
+			--os_version 17.0.0 --os_patch_level 2035-06 \
+			--cmdline "console=null" -o out/shim-boot-venus.img
+	else
+		# venus: v3/v4 boot header (no page/base/offset/dtb slots in the v3 boot part).
+		mkbootimg --header_version "$VENUS_HV" --kernel out/Image --ramdisk out/ramdisk.bin \
+			--os_version 17.0.0 --os_patch_level 2035-06 \
+			--cmdline "console=null" -o out/shim-boot-venus.img
+	fi
 	ls -l out/Image out/shim-boot-venus.img
 	exit 0
 fi
