@@ -1,0 +1,43 @@
+xnu: 0091 sweet skip serial KDP init, keep debug console on fbcon
+
+Real-phone boot #19 (0088+0089+0090 kernel) got further than every
+previous boot: kdp_core_init() registered the core dump handler, then
+kdp_init() printed "Serial requested, consistent debug disabled or
+debug boot arg not present, configuring debugging over serial" and the
+machine froze with no further fbcon output.
+
+On arm64 the CONFIG_SERIAL_KDP block in kdp_init() is entered whenever
+no kdp_match_name boot-arg is set and no ADT consistent-debug registry
+exists (PE_consistent_debug_enabled()).  It registers the serial
+send/receive pair, which would route KDP packets through
+pal_serial_putc into pe_serial.  Sweet has no usable UART - pe_serial
+is the framebuffer fake serial console - so serial KDP can never reach
+a debugger and only garbles the one debug channel we have.
+
+Skip the entire serial-KDP registration when building for
+ARM64_BOARD_CONFIG_SWEET, right after kdp_core_init() so the core dump
+handler registration is preserved.  printf/kprintf/panic output keeps
+flowing through the console path; other arm64 boards are unchanged.
+diff --git a/osfmk/kdp/kdp_udp.c b/osfmk/kdp/kdp_udp.c
+--- a/osfmk/kdp/kdp_udp.c
++++ b/osfmk/kdp/kdp_udp.c
+@@ -2260,6 +2260,19 @@
+ 	kdp_setup_packet_size();
+ 	kdp_core_init();
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * P0091: sweet has no usable UART, so serial KDP packets never
++	 * reach a host debugger; the pe_serial frame-buffer fake uart
++	 * would only garble the console, and real-phone boot #19 wedged
++	 * right after "configuring debugging over serial".
++	 * Skip the whole serial-KDP registration here; the debug console
++	 * stays on fbcon and panics keep printing through the console.
++	 */
++	printf("P0091: serial KDP skipped on sweet, debug console stays on fbcon\n");
++	return;
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ #if CONFIG_SERIAL_KDP
+ 	char kdpname[80];
+ 	struct kdp_in_addr ipaddr;
