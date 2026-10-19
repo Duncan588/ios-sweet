@@ -2,6 +2,11 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-19 (venus probe, read first) <<<
+
+- **venus (Xiaomi 11 / SM8350) probe shim constant wiring DONE (commit `24cddb4` on venus-probe):** `shim/console.h` + `shim/mmu.h` + `shim/shim.c` now take FB_BASE/W/H/STRIDE and vtimer/ptimer INTIDs 27/30 from `soc_venus.h` under `#ifdef VENUS_PROBE`; sweet builds keep the original literals (byte-identical default). `soc_venus.h` has dual panel geometry (FHD 1080x2400 default, QHD 1440x3200 via `-DVENUS_PANEL_QHD`; build.sh `--venus [3|4] [payload] [qhd]`) — fb bytes W*H*4 = 10.37 MB (FHD) / 17.6 MB (QHD), both ≤ 0x2300000 (36 MiB splash region). Linux smoke (notebook, ~/ios-sweet-vp4 @ 24cddb4): `bash build.sh --venus 3` OK, `python3 tools/qemu-venus.py shim/out/Image out --secs 20 --fail-on-panic` -> **`{"status": "venus_probe_ok", "unknown_glyphs": 0, bg 0xff0000a0}`, banner `VENUS PROBE venus-sm8350`, PSCI hvc ver 0x10001, `probe done, no reset call`**, QHD rebuild also OK (not qemu'd). qemu-venus.py reads soc_venus.h every run (first literal VENUS_FB_W is the FHD default; no caching). Gotcha fixed on the way: a `CFLAGS=... $([ cond ] && echo X)` line killed the whole script silently under `set -e` (bash 5 errexit on failed cmd-sub assignment) — use `if`. Remaining: rebuild of `--venus 3 qhd` qemu-validated only if needed; pre-existing `venus_probe.c:86` -Wreturn-type warning untouched. S1 real-hardware probe boot is next.
+
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**
