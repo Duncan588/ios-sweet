@@ -1,7 +1,12 @@
 #pragma once
 #include <stdint.h>
 
+#ifndef VENUS_PROBE
 #define FB_PHYS	0x9c000000UL
+#else
+#include "soc_venus.h"
+#define FB_PHYS	VENUS_FB_BASE
+#endif
 
 struct mmu_info {
 	uint64_t img_lo, img_hi, ttbr;

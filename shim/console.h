@@ -1,10 +1,18 @@
 #pragma once
 #include <stdint.h>
 
+#ifndef VENUS_PROBE
 #define FB_BASE		0x9c000000UL	/* reserved-memory cont_splash_region */
 #define FB_W		1080
 #define FB_H		2400
 #define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, matches mainline simplefb */
+#else
+#include "soc_venus.h"			/* venus probe: values from on-device DT */
+#define FB_BASE		VENUS_FB_BASE
+#define FB_W		VENUS_FB_W
+#define FB_H		VENUS_FB_H
+#define FB_STRIDE	(VENUS_FB_W * 4)	/* == VENUS_FB_STRIDE */
+#endif
 
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U

@@ -19,11 +19,23 @@
 #define VENUS_FB_BASE		0xEA600000UL
 #define VENUS_FB_REGION_SIZE	0x2300000UL	/* whole splash region          */
 
-/* FHD mode (default MI 11 setting) from dtbo entry 46 panel timings:
- * width 0x438, height 0x960. QHD alternative: 1440x3200 (0x5A0 x 0xC80) if
- * the user enabled QHD+; bootloader splash then uses that resolution. */
-#define VENUS_FB_W		1080
-#define VENUS_FB_H		2400
+/* Two panel geometry options, from dtbo entry 46 ("xiaomi 38 08 0a"):
+ * FHD  (default MI 11 setting): 1080x2400  -> stride 4320, fb 10,368,000 bytes
+ * QHD+ (user setting):          1440x3200  -> stride 5760, fb 18,432,000 bytes
+ * Both fit the 0x2300000 (36 MiB) splash region: expected framebuffer bytes
+ * = W * H * 4 (a8r8g8b8) <= VENUS_FB_REGION_SIZE holds for either mode.
+ * Default is FHD; build with -DVENUS_PANEL_QHD (build.sh "qhd" arg) for QHD. */
+#define VENUS_FB_W_FHD		1080
+#define VENUS_FB_H_FHD		2400
+#define VENUS_FB_W_QHD		1440
+#define VENUS_FB_H_QHD		3200
+#ifndef VENUS_PANEL_QHD
+#define VENUS_FB_W		1080	/* == VENUS_FB_W_FHD */
+#define VENUS_FB_H		2400	/* == VENUS_FB_H_FHD */
+#else
+#define VENUS_FB_W		1440	/* == VENUS_FB_W_QHD */
+#define VENUS_FB_H		3200	/* == VENUS_FB_H_QHD */
+#endif
 #define VENUS_FB_STRIDE		(VENUS_FB_W * 4) /* a8r8g8b8 assumption; bpp   */
 				/* NOT in DT — panel bpp=24 dsi; DPU fb format  */
 				/* read at runtime if first draw looks wrong.  */

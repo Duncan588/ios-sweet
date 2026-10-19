@@ -14,10 +14,13 @@ if [ "${1:-}" = "--venus" ]; then
 	shift
 	VENUS=1
 	VENUS_HV=3
+	VENUS_QHD=0
 	case "${1:-}" in
 		3|4) VENUS_HV=$1; shift ;;
 	esac
-	echo "warning: venus mode: header_version=$VENUS_HV, FB/etc values in soc_venus.h are TODO(dump) placeholders"
+	if [ "${1:-}" = "qhd" ]; then VENUS_QHD=1; shift; fi
+	if [ "$VENUS_QHD" = 1 ]; then CFLAGS="$CFLAGS -DVENUS_PANEL_QHD"; fi
+	echo "warning: venus mode: header_version=$VENUS_HV, constants from soc_venus.h (qhd=$VENUS_QHD)"
 	if [ -n "${1:-}" ]; then echo "warning: venus v$VENUS_HV boot header carries no dtb slot; '$1' will NOT be packed" \
 		"(dtb belongs in vendor_boot/dtbo; run dump packing separately)"; fi
 fi

@@ -33,8 +33,14 @@
 #define GICR_ISPENDR0		(GICR_SGI + 0x200)
 #define GICR_ISACTIVER0		(GICR_SGI + 0x300)
 #define GICR_ICFGR1		(GICR_SGI + 0xc04)
-#define VTIMER_INTID		19	/* DT: <GIC_PPI 3 ...>, not the usual 27 */
-#define PTIMER_INTID		18	/* DT: <GIC_PPI 2 ...> */
+#ifndef VENUS_PROBE
+#define VTIMER_INTID	19	/* DT: <GIC_PPI 3 ...>, not the usual 27 */
+#define PTIMER_INTID	18	/* DT: <GIC_PPI 2 ...> */
+#else
+#include "soc_venus.h"		/* venus (SM8350) DT timer INTIDs: 27/30 */
+#define VTIMER_INTID	VENUS_VTIMER_INTID
+#define PTIMER_INTID	VENUS_NPTIMER_INTID
+#endif
 #define SGI_INTID		1
 
 #define PSCI_VERSION		0x84000000UL
