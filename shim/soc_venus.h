@@ -35,20 +35,29 @@
  * Both fit the 0x2300000 (36 MiB) splash region: expected framebuffer bytes
  * = W * H * 4 (a8r8g8b8) <= VENUS_FB_REGION_SIZE holds for either mode.
  * Default is QHD (the live machine's actual user setting; the live Linux
- * DTB reports the QHD 1440x3200 cmd panel, dtb_idx=4/dtbo_idx=46):
- * venus_probe.c sets VENUS_PANEL_QHD itself, so plain `bash build.sh
- * --venus` is QHD. FHD needs -DVENUS_PANEL_QHD removed (or an explicit
- * "fhd" build flag) and is only a fallback. */
+ * DTB reports the QHD 1440x3200 cmd panel): chrome default below, so plain
+ * `bash build.sh --venus` builds QHD and the qemu-venus.py fb parser sees
+ * the same first-match values. FHD is a fallback option and needs an
+ * explicit build flag / file edit. */
+/* v4 default: QHD+ — the live machine's actual user setting (Linux DT,
+ * dtb_idx=4/dtbo_idx=46, reports the QHD 1440x3200 cmd panel). Applies to
+ * every TU that includes this header (console drawing included). FHD is a
+ * fallback option: build with -DVENUS_PANEL_FHD (needs an explicit build
+ * flag hack to undefine the default, or edit this file). */
+#ifndef VENUS_PANEL_QHD
+#define VENUS_PANEL_QHD		1
+#endif
+
 #define VENUS_FB_W_FHD		1080
 #define VENUS_FB_H_FHD		2400
 #define VENUS_FB_W_QHD		1440
 #define VENUS_FB_H_QHD		3200
-#ifndef VENUS_PANEL_QHD
-#define VENUS_FB_W		1080	/* == VENUS_FB_W_FHD */
-#define VENUS_FB_H		2400	/* == VENUS_FB_H_FHD */
+#ifdef VENUS_PANEL_QHD
+#define VENUS_FB_W		VENUS_FB_W_QHD	/* 1440 */
+#define VENUS_FB_H		VENUS_FB_H_QHD	/* 3200 */
 #else
-#define VENUS_FB_W		1440	/* == VENUS_FB_W_QHD */
-#define VENUS_FB_H		3200	/* == VENUS_FB_H_QHD */
+#define VENUS_FB_W		VENUS_FB_W_FHD	/* 1080 */
+#define VENUS_FB_H		VENUS_FB_H_FHD	/* 2400 */
 #endif
 #define VENUS_FB_STRIDE		(VENUS_FB_W * 4) /* a8r8g8b8 assumption; bpp   */
 				/* NOT in DT — panel bpp=24 dsi; DPU fb format  */

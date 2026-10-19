@@ -11,13 +11,6 @@
  * v3 semantics: power off, reboot, or fall back to ABL — it never hangs on
  * screen. Returns 1 so shim_main does NOT fall through to the loader.
  */
-/* QHD is the live machine's panel setting (live Linux DTB: QHD 1440x3200 cmd
- * panel), so v4 forces it here. Must precede includes: console.h pulls in
- * soc_venus.h, whose geometry depends on this flag. */
-#ifndef VENUS_PANEL_QHD
-#define VENUS_PANEL_QHD		1
-#endif
-
 #include <stdint.h>
 #include "console.h"
 #include "fdt.h"
