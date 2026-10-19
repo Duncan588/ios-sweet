@@ -1,3 +1,24 @@
+### >>> UPDATE 2026-10-20e boot#21 判读 + P0092 复位漏斗/panic 冻结探针 <<<
+
+- **boot#21 判读**：屏至 `Security policy loaded: Guarded vnode policy` → `SWEET: trust caches unavailable (Image4/AMFI not installed)` 后无声重启；0010/0089 的 panic 通道打印一行都未出现 ⇒ **死亡不走 panic()**。另核实 `kernel_bootstrap_log()` 仅 STARTUP_DEBUG_VERBOSE 才打印，trust cache 之后至 bsd_init 的 kernel_bootstrap_thread 末段在真机完全静默，死窗即在此段（或 bsd_init 早期）。
+- **P0092**（commit `8714110`，`xnu/patches/0092-sweet-resetfunnel-drill.patch`）：非 panic 复位漏斗 + 死窗探针，全部增量在 `ARM64_BOARD_CONFIG_SWEET` 门内（freeze 助手放既有 SWEET 门的 sweet_early.c）：
+  - startup.c：trust cache 后至 bsd_init 各末段调用（OSKextRemoveKextBootstrap / machine_lockdown / kernel_do_post / PE_lockdown_iokit / bsd_init enter+return）显式打印；
+  - bsd_init.c：entry / mac_policy_initbsd / vfsinit / bsd_autoconf / setconf(IOFindBSDRoot 前后) / vfs_mountroot err / root vnode / bsd_utaskbootstrap / done；
+  - 复位漏斗：`PEHaltRestartInternal` 入口 type/details + arm64 `halt_all_cpus` 入口 ⇒ 答「谁请求了重启」；
+  - sleh.c：`sleh_synchronous`（SVC64 排除）+ `sleh_serror` 入口；
+  - IOKitBSDInit.cpp / sweet_ufs.c / sweet_amfi.c：bsd 阶段与 UFS 各步（`SWEET UFS:` 不再是首信号）；
+  - **UniXNU 式 panic 冻结**：boot-arg `sweetpanicfreeze=1` 时 `panic_trap_to_debugger` 先调新增 `sweet_early_panic_freeze()`（`=== PANIC FREEZE (P0092) ===` 横幅 + 重复 panic 理由 + DAIF 屏蔽 + wfi 死循环，**不进复位尾**），防闪重启洗屏；无 boot-arg 零改动。
+- **验证三绿**：bt87 树（=post-0091 现树，经 grep P0088/P0089/P0091 确认）`git apply --check` + round-trip apply + xnu-cc.py 重编 9 个受影响 TU（0 failed，log /tmp/ci-39298895700.log）。生成方式改为笔记本脚本精确替换 + git diff 产出（手写 diff 两次失败弃用）。
+- **boot#22 计划**：CI 39313815459 artifact → kernel-0092 → mkpayload cmdline = 官方 17 参数 + `sweetpanicfreeze=1`（新增，用户指示）→ `shim/out/shim-boot-venus-0092.img` → 发射。EXPECT：屏上应见 P0092 探针流；若死于漏斗则末行 `P0092: PEHaltRestartInternal type=…/halt_all_cpus` 指认请求者；若为 panic 则见 PANIC FREEZE 横幅定格可拍。
+
+### >>> UPDATE 2026-10-20d boot#21 发射：0091 内核跳过 serial KDP（kdp serial 冻死修复，待拍屏判读） <<<
+
+- **boot#19 判读（静态末屏，观测）**：定格在 `Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial`（osfmk/kdp/kdp_udp.c kdp_init CONFIG_SERIAL_KDP 块）。语义核实：`debug=0xc = DB_NMI|DB_KPRT`（osfmk/kern/debug.h:513）；`serial=3 = OUTPUT|INPUT`（osfmk/console/serial_protos.h:52）只管串行控制台切换、与 KDP 无关；arm64 下 `kdp_match_name` 缺省 + ADT 无 consistent-debug 注册表（`PE_consistent_debug_enabled`=registry!=NULL=FALSE）→ serial KDP **必被注册**，sweet 无 UART（pe_serial 即 fbcon 假串口）→ 冻死。`debug=0`/去掉 `serial=3` 都关不掉这段，唯一 cmdline 门是 `kdp_match_name=<非serial值>`。
+- **patch 0091**（commit `6594348`，`xnu/patches/0091-sweet-kdp-noserial.patch`，LF，官方风格，13 行增量）：kdp_init 在 `kdp_core_init()`（core dump 注册保留）之后、serial gate 之前按 `ARM64_BOARD_CONFIG_SWEET` 打 `P0091: serial KDP skipped on sweet, debug console stays on fbcon` 并 return；输出/panic 走既有 console/fbcon。双验证绿：`git apply --check`（pre-0087 树）+ xnu-cc.py 重编 osfmk/kdp/kdp_udp.c（0 of 1 failed）。
+- **CI run 39304153772 success**；内核 17,222,576 B sha256 `bb8311264962e469101307212b055f1290d689175950e94a815ed74b3b75a46b`（= `xnu/out-0091/kernel.development.sweet`，与 SHA256SUMS 一致；scp `~/kernels/kernel-0091` 逐字节一致）。字符串 P0087/P0088/P0089/P0091 全 FOUND（P0090 纯宏 MISSING 属预期）。
+- **cmdline 候选材料（kernel-0089cc 不变，零编译，本轮未发射）**：候选①官方整串+`kdp_match_name=none`：`payload-venu0-0089kdp.bin` sha `ad58bc8f…68e4`、`shim-boot-venus-0089kdp.img` sha `1f93a8d6…226a`；候选②再 `debug=0`：`payload-venu0-0089kdpb.bin` sha `9aa16a95…350e`、`shim-boot-venus-0089kdpb.img` sha `a7306de2…0437`（均在 `~/ios-sweet-vp4/shim/out/`）。
+- **boot#21 发射（主会话授权）2026-10-20 02:57:32 +0800**：官方纯口径 17 参数（无 kdp_match_name）`payload-venu0-0091.bin` sha `7551125db9e3731bc4474dd280cc75ebf52d07359a71e2cc70619a298bd8fad4`、`shim-boot-venus-0091.img`（17,293,312 B）sha `40409719eb4261263a64b8d9a41353a804b11b7a32f013a70200c38ec77e3915`；build.sh 已吞 payload 成 `shim/out/ramdisk.bin`（sha 与 payload 相同）。probe 日志 `~/ios-sweet/logs/venus-probe-20261020-025732.log`。**判读**：开机段应见 `P0091: serial KDP skipped on sweet …`（替代 boot#19 的 `Serial requested…` 行）→ 继续走即突破 kdp 定格；若仍冻在 kdp 段则拍屏报行，转 instrumented 二轮。手机留在启动屏，不再重启循环。
+
 ### >>> UPDATE 2026-10-20c boot#19 备发完成：0088+0089+0090 内核（panic 强制上屏 + ledger beats + LEDGER_NAME_MAX 40），镜像已打不发射（最先读这节） <<<
 
 - **本轮 commit**：`c1bb7ea`（0089：debug.c 强制 panic flush 钩子 `sweet_early_panic_flush`、SWEET.h `PLATFORM_PANIC_LOG_PADDR 0xaff80000` / SIZE `0x80000`（ABL ramdump-fb 预约区尾段之上/kernel physBase 之下，VM 永不取用）、task.c init_task_ledgers 全程 beats + coalition.c 调用前后行 + pe_init.c gPanicBase 映射确认行；7 文件，全 `#if defined(ARM64_BOARD_CONFIG_SWEET)` 门）、`0f21432`（0089 patch header 叙事修正：无 assert 会 fire，venus 冻结点最可能在 kPEPanicBegin 硬件 beat，gPanicBase==0 只是把整个 panic 故事藏掉）、`dc40ee2`（0090，另一会话：`LEDGER_NAME_MAX` 32→40，纯宏无打印——boot#18 官方同款 32 字符 ledger key 触发 `task.c:1265` panic 的根因修复）。
